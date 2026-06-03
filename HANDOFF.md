@@ -24,21 +24,24 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 
 ### Next work — 3 tracks, IN ORDER. Each track: code → `npm test && npm run build` → commit → push.
 
-**TRACK 1 — Remove confirmed-dead fallback code (small warmup, do first).**
-In `src/calendar-executor.ts`, `getCalendars()` has an `id of cal` fallback block (the `if calId
-is "" then … set calId to id of cal …` inside the per-calendar loop). It was verified post-restart
-to be a **no-op** — neither `calendarIdentifier of cal` nor `id of cal` returns a value on this
-account's CalDAV/Google calendars, so ids are always `""` (cosmetic; targeting is by name). Remove
-the fallback block, keep only the `calendarIdentifier` try/catch, fix the comment. No test changes.
+**TRACK 1 — Remove confirmed-dead fallback code (small warmup, do first). ✅ DONE 2026-06-03**
+(commit `1630c65`) Removed the `id of cal` fallback from `getCalendars()`, kept the
+`calendarIdentifier` try/catch, documented why ids come back blank. 31 tests green, build green.
 
 **TRACK 2 — EventKit Calendar port (the big one).** Read `docs/RESEARCH-caldav-recurring-delete.md`
 fully first. Conclusion there: recurring-series delete on CalDAV/Google is NOT fixable in
 AppleScript (structural); the fix is a small Swift **EventKit** CLI the Node server spawns.
 Sequence:
-  1. **Smoke test FIRST (go/no-go):** ~30-line Swift using EventKit to `remove(span:.futureEvents)`
-     a throwaway recurring event in a Google-backed calendar (e.g. Personal). Create the test event
-     via the MCP, note its uid, run the CLI, confirm the series is actually gone (AppleScript can't).
-     NOTE: EventKit's first call triggers a macOS permission dialog — needs a human at the machine.
+  1. **Smoke test FIRST (go/no-go): ✅ DONE — GO (2026-06-03, commit `c6611fe`).** Built
+     `src/eventkit-cli/` (smoke-test.swift + Info.plist + smoke.sh). Ran from Terminal against a
+     fresh 8-occurrence weekly series in the Google-backed *Personal* calendar:
+     `remove(span:.futureEvents)` removed the whole series and it did NOT regenerate after sync
+     (EventKit re-query → 0, AppleScript MCP search → []). **EventKit port greenlit.** Two findings
+     baked into the smoke test: (a) AppleScript `uid` == EventKit `calendarItemIdentifier` (match on
+     that first, not external/eventIdentifier); (b) the binary needs `NSCalendarsFullAccessUsage-
+     Description` embedded via linker `-sectcreate` AND a `codesign --force --sign -` re-sign to
+     *bind* it, and must be run from the user's own Terminal (TCC attributes to the responsible GUI
+     app; from Claude's shell it's denied silently). `smoke.sh` handles build+sign.
   2. Build a Swift CLI (`src/eventkit-cli/` or similar) with subcommands mirroring CalendarExecutor:
      list-calendars, get-events, create-event, update-event, delete-event, search-events. JSON to stdout.
   3. Swap CalendarExecutor's AppleScript paths for `execAsync` calls to the CLI. Keep the

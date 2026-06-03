@@ -150,11 +150,17 @@ index.ts (MCP)
 ```
 
 ## 5. Honest caveats / what to verify before committing
-- The specific claim "EventKit deletes a recurring **Google** series where AppleScript fails"
-  is strong inference (corroborated by EventKit-based MCPs shipping the feature) but not stated
-  in an Apple doc. **Cheap test:** before porting, build a ~30-line Swift snippet calling
-  `remove(event, span:.futureEvents)` on the lingering `7ADB72E8…` test event in *Personal*
-  and confirm it actually disappears and stays gone after sync.
+- ~~The specific claim "EventKit deletes a recurring **Google** series where AppleScript fails"
+  is strong inference … not stated in an Apple doc.~~ **✅ VERIFIED 2026-06-03 (GO).** Built the
+  smoke test (`src/eventkit-cli/`) and ran it from Terminal against a fresh 8-occurrence weekly
+  series in the Google-backed *Personal* calendar. `remove(event, span:.futureEvents)` removed the
+  whole series: EventKit re-query → 0, a fresh separate-process EventKit `find` → 0, AND the
+  AppleScript-backed MCP `search_events` → `[]` after sync settled (not regenerated). AppleScript
+  only ever no-ops this. **The EventKit port is greenlit.**
+  - Two findings the build needs: (a) the AppleScript event `uid` == EventKit's
+    `calendarItemIdentifier` (NOT `calendarItemExternalIdentifier`/`eventIdentifier`) — match on
+    that first; (b) EventKit's TCC prompt is attributed to the *responsible GUI app*, so it must be
+    granted from the user's own Terminal (from Claude's embedded shell it's denied silently).
 - TCC Full Calendar Access must be granted to the helper binary (bundle + Info.plist key);
   plan the `launchd` pre-auth for the Mac mini.
 - Google REST testing-mode refresh tokens expire after 7 days unless the app is "published."
