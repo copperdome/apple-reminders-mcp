@@ -25,8 +25,15 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
     `src/eventkit-cli/main.swift` (6 subcommands → JSON) + `build-eventkit.sh`. Binary compiles,
     embeds the Info.plist, and codesigns cleanly. The no-TCC paths are verified from Claude's shell
     (usage guard emits `{"error":…}` exit 1; a data command hits the documented TCC denial → clean
-    `{"error":…}` exit 3). **Live data-command verification (list/get/search/create/update/delete
-    round-trip) still needs John at his own Terminal** — see step 2 verify checklist below.
+    `{"error":…}` exit 3).
+  - `list-calendars` ✅ **VERIFIED LIVE** (John's Terminal) — returns 13 calendars, **every one with a
+    real `calendarIdentifier` UUID** (fixes the blank-id issue AppleScript had on this account) and
+    correct `writable` flags. **Finding: duplicate calendar names** — "Negative Cutters" appears
+    twice with different ids (`52409036…`, `91BA2B49…`). Name-based targeting (the current
+    `calendarName` interface, and `calendar(named:)` = `.first{title==name}`) is therefore ambiguous
+    for it. **Step-3 consideration:** with real ids now available, optionally allow targeting by id.
+  - **Still pending live (needs John at Terminal):** get/search/create/update/delete round-trip,
+    incl. the recurring create→delete row — see step 2 verify checklist below.
 - **Loose ends:** (1) the old `[MCP-TEST]` recurring event `7ADB72E8-…` in *Personal* — John may
   still need to delete it in the Calendar UI (or just delete it with the new EventKit smoke CLI:
   `bash src/eventkit-cli/smoke.sh delete 7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` from Terminal — it
