@@ -4,68 +4,75 @@ Use this to resume development after a restart. Read this + CLAUDE.md before tou
 
 ---
 
-## ▶ Resuming in Claude Code (start here)
+## ▶ Resuming in a new session (start here)
 
-You're picking this up in a Claude Code session opened on `~/apple-reminders-mcp`.
+You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp`.
+**Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
+(the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-1. **Read context:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
-   (the EventKit/CalDAV research from 2026-06-03).
-2. **Commit the in-flight work first.** The working tree has **uncommitted** changes from the
-   last two sessions (Cowork couldn't write to `.git`). It's all built and consistent — just
-   not committed:
-   - Modified: `src/applescript-executor.ts`, `src/index.ts`
-   - Untracked: `src/calendar-executor.ts`, `docs/`, `HANDOFF.md`
-   - Suggested: `git add -A && git commit -m "Fix Reminders apostrophe/escaping (heredoc), honest recurring-delete error, dict cleanup; add CalDAV research"`
-3. **Build/test loop:** `npm run build` (currently green, `dist/` is fresh). There are **no unit
-   tests yet** — see "Set up a test harness" under Remaining/next; that's the recommended first
-   dev task.
-4. **To test the MCP live** you must **restart Claude Desktop** (the MCP runs there, not in
-   Claude Code, and doesn't hot-reload). Then run the post-restart verification below.
+### Current state — clean, committed, verified (no outstanding fixes)
+- **Working tree is clean. Everything is committed and pushed.** `origin` was repointed to the
+  fork **`copperdome/apple-reminders-mcp`** (push there); `upstream` = `dbmcco/apple-reminders-mcp`
+  (copperdome has no write access to it). Latest commit on `main`: **`be85a23`**.
+- `npm test` → **31 green** (vitest; tests in `test/`, pure helpers in `src/applescript-util.ts`).
+  `npm run build` → green. `dist/` is fresh.
+- **Claude Desktop was restarted and the live MCP was verified** (see "Post-restart verification"
+  below): the critical apostrophe fix works, the honest recurring-delete error works, and the
+  reminder-recurrence schema cleanup is live. **All 2026-06-03 audit bugs are fixed AND verified.**
+- The only manual loose end: **John is deleting the lingering `[MCP-TEST]` recurring event**
+  (`7ADB72E8-…`) in the Calendar UI by hand (MCP can't remove a CalDAV recurring series).
 
-**Two prioritized tracks from here:** (a) the test harness + the small schema cleanup, and
-(b) the bigger move — porting the Calendar half to EventKit (see Remaining/next + the research
-doc). Reminders stays on AppleScript.
+### Next work — 3 tracks, IN ORDER. Each track: code → `npm test && npm run build` → commit → push.
+
+**TRACK 1 — Remove confirmed-dead fallback code (small warmup, do first).**
+In `src/calendar-executor.ts`, `getCalendars()` has an `id of cal` fallback block (the `if calId
+is "" then … set calId to id of cal …` inside the per-calendar loop). It was verified post-restart
+to be a **no-op** — neither `calendarIdentifier of cal` nor `id of cal` returns a value on this
+account's CalDAV/Google calendars, so ids are always `""` (cosmetic; targeting is by name). Remove
+the fallback block, keep only the `calendarIdentifier` try/catch, fix the comment. No test changes.
+
+**TRACK 2 — EventKit Calendar port (the big one).** Read `docs/RESEARCH-caldav-recurring-delete.md`
+fully first. Conclusion there: recurring-series delete on CalDAV/Google is NOT fixable in
+AppleScript (structural); the fix is a small Swift **EventKit** CLI the Node server spawns.
+Sequence:
+  1. **Smoke test FIRST (go/no-go):** ~30-line Swift using EventKit to `remove(span:.futureEvents)`
+     a throwaway recurring event in a Google-backed calendar (e.g. Personal). Create the test event
+     via the MCP, note its uid, run the CLI, confirm the series is actually gone (AppleScript can't).
+     NOTE: EventKit's first call triggers a macOS permission dialog — needs a human at the machine.
+  2. Build a Swift CLI (`src/eventkit-cli/` or similar) with subcommands mirroring CalendarExecutor:
+     list-calendars, get-events, create-event, update-event, delete-event, search-events. JSON to stdout.
+  3. Swap CalendarExecutor's AppleScript paths for `execAsync` calls to the CLI. Keep the
+     `CalendarExecutor` class, `CalendarEvent`/`CalendarInfo` types, and `index.ts` handlers identical
+     — only the implementation changes. Add unit tests for any new pure TS parse/serialize helpers.
+  4. Reference impls: `PsychQuant/che-ical-mcp` (mature), `EgorKurito/apple-calendar-mcp` (simple).
+  5. **Keep Reminders on AppleScript — do NOT touch `applescript-executor.ts` for this.**
+
+**TRACK 3 — Mail suite (net-new).** Read `docs/mail-dictionary.md` first (object model differs from
+Reminders AND Calendar). `src/mail-executor.ts` does not exist yet. Implement simplest→complex,
+each tool committed independently: list_mailboxes, get_emails, get_email, search_emails, send_email,
+reply_to_email, move_email, mark_read/unread, trash_email. Put script-gen + parsing as pure exported
+functions (in `applescript-util.ts` or a new `mail-util.ts`) with regression tests BEFORE wiring into
+`mail-executor.ts`. Use the heredoc form (`osascript <<'APPLESCRIPT'`) + `escAS()` for all inputs.
+Wire `MailExecutor` into `index.ts` exactly like `CalendarExecutor` (import, construct, schemas, cases).
+
+### Environment reality (don't fight these)
+- **The MCP runs inside Claude Desktop; `dist/` changes need a Desktop restart to go live** (no
+  hot-reload). The live `apple-apps` MCP tools (`mcp__apple-apps__*`) are only reachable from a
+  **local Cowork session**, not a remote/scheduled one.
+- **This work cannot run as a remote/scheduled routine.** A remote session has no local filesystem,
+  no `osascript`, no `apple-apps` MCP, and can't restart Desktop or dismiss permission dialogs.
+  Code-writing + `npm test` + `npm run build` + commit/push CAN run autonomously; every **live**
+  verification step needs you (restart + macOS permission dialogs).
+- To re-verify live after a build: restart Claude Desktop, then run the relevant tool calls (the
+  apple-apps tools are deferred — load via ToolSearch `select:mcp__apple-apps__…`).
 
 ---
 
-## ⚠️ State right now
+## Reference — 2026-06-03 audit (bugs found & fixed; all now verified live)
 
-A deep verification + bug-test pass was run against the **live** MCP, and several real bugs
-were found and fixed in `src/`. **The fixes are compiled into `dist/` but NOT live yet —
-they require a Claude Desktop restart.** Until then the running server still has the old
-behavior (notably: apostrophes in reminders break).
-
-After restart, re-run the **post-restart verification** section below to confirm the fixes.
-
-### Update — test-harness session (after the 2026-06-03 audit)
-Committed. This session set up the test harness and did the schema cleanup that the prior
-handoff deferred. No live-MCP behavior changed beyond the recurrence-field removal (still
-needs a restart to go live). What changed:
-- **vitest harness** added: `npm test` (→ `vitest run`) and `npm test:watch`. Tests live in
-  `test/` (excluded from `tsc`, so `dist/` stays clean). **31 tests, all green.**
-- **Pure logic extracted** to `src/applescript-util.ts`: `escAS`, `isoToAppleScriptDate`,
-  `parseReminders`, `parseEvents`, plus a new `interpretDeleteResult` (the OK/NOTFOUND/PERSISTED
-  branch mapping from `deleteEvent`, now unit-testable). Both executors import from it; the
-  duplicated private copies are gone. Calendar's 10 inline `.replace(…)` escapes were
-  centralized onto `escAS` (behavior-identical, now under test).
-- **Regression tests** cover the 2026-06-03 bugs: apostrophe pass-through in `escAS` (the
-  critical shell bug), backslash-before-quote ordering, `isoToAppleScriptDate` no-UTC-drift +
-  AM/PM/midnight/noon + unparseable pass-through, `§§§`/`§REC§` parsing + `missing value` +
-  newline restoration, and the PERSISTED/NOTFOUND delete branches.
-- **Phantom reminder recurrence removed** (the deferred schema cleanup): dropped from the
-  `create_reminder`/`update_reminder` schemas + `get_reminders` description, the `createReminder`/
-  `updateReminder` signatures, the `Reminder` interface, `parseReminders`, and the AppleScript
-  (reminder lines now emit 10 §§§ fields, name…flagged). Calendar recurrence is untouched (it's real).
-- CLAUDE.md workflow note updated: `npm test` + `npm run build` before restart.
-
-Still pending the same Claude Desktop restart + the post-restart verification below.
-
----
-
-## What this session did
-
-Verified the previous session's fixes against the live MCP, found that two of them did NOT
-actually work, found a new critical bug, fixed everything fixable, and documented the rest.
+History kept for context. This audit verified the prior session's fixes against the live MCP,
+found that two did NOT work, found a new critical bug, and fixed everything fixable. All of the
+below are now fixed AND confirmed live (see "Post-restart verification").
 
 ### Confirmed working from last session
 - `list_reminder_lists` — ✅ FIXED & VERIFIED LIVE. The default "Reminders" list now returns a
@@ -169,34 +176,19 @@ limitation — confirmed again above). **John is deleting it in the Calendar app
 
 ## Remaining / next
 
-- **Test harness — ✅ DONE (vitest, 31 green).** `escAS`, `isoToAppleScriptDate`,
-  `parseReminders`, `parseEvents`, and `interpretDeleteResult` are extracted to
-  `src/applescript-util.ts` and unit-tested in `test/applescript-util.test.ts`. Covers all the
-  2026-06-03 bugs (apostrophe pass-through, escape ordering, date no-UTC-drift, delimiter
-  parsing, delete branches). `npm test` wired into CLAUDE.md.
-  - **Still not done — pure-script-string assertions.** The tests cover escaping/date/parse
-    helpers but NOT the generated AppleScript text itself (the script-builder strings are still
-    inlined in the executor methods, not extracted). If you want to assert "the create_reminder
-    script is shell-safe / contains no `\'`", split each "build script" string out of its
-    `async` method into a pure exported builder first, then test the string. Lower value now
-    that escaping is centralized + tested, but it's the remaining gap.
-  - **Still not done — optional live/integration tier** (env-gated `TEST_LIVE=1`, throwaway
-    list/calendar, self-cleaning) mirroring the manual matrix. Keep it out of default `npm test`.
-- **After restart:** run the 4 verification steps above; update this file with results.
-- **Tool descriptions (`index.ts`) — ✅ DONE.** `get_reminders` no longer advertises
-  recurrence; `recurrenceRule` removed from the `create_reminder`/`update_reminder` schemas and
-  handlers. (Reminders have no recurrence.) Calendar's `recurrence` is untouched.
-- **Recurring delete on CalDAV — researched 2026-06-03, see `docs/RESEARCH-caldav-recurring-delete.md`.**
-  Conclusion: it is NOT fixable in AppleScript (structural — AppleScript `delete` only writes an
-  EXDATE for one occurrence, and CalDAV/Google masters are non-local + server-authoritative).
-  **Recommended fix: move the Calendar half of this MCP off AppleScript onto EventKit** (small
-  Swift CLI the Node server spawns). EventKit unifies iCloud + Google-via-CalDAV + local, exposes
-  the `span` (thisEvent / futureEvents) delete semantics AppleScript lacks, fixes recurring-event
-  expansion, and gives account-type routing via `EKSource`. Keep Reminders on AppleScript.
-  Borrow from `PsychQuant/che-ical-mcp` (mature) or `EgorKurito/apple-calendar-mcp` (simple
-  reference). Before porting, do the ~30-line Swift `remove(span:.futureEvents)` smoke test on
-  the lingering `7ADB72E8…` event to confirm EventKit actually deletes a Google series.
-- **Mail suite** — still not started. Dictionary is at `docs/mail-dictionary.md` (read first).
-  Planned tools: list_mailboxes, get_emails, get_email, search_emails, send_email,
-  reply_to_email, move_email, mark_read/unread, trash_email. Implementation file
-  `src/mail-executor.ts` does not exist yet; wire into `index.ts` like CalendarExecutor.
+The primary next work is the **3 tracks in "▶ Resuming… start here"** above (dead-code removal →
+EventKit port → Mail suite). This section is the **lower-priority backlog** that doesn't fit those.
+
+- ✅ **DONE this session:** test harness (vitest, 31 green; pure helpers extracted to
+  `src/applescript-util.ts`), tool-description/schema cleanup (phantom reminder recurrence removed),
+  and the full post-restart live verification. Nothing left to do on these.
+- **Backlog — pure-script-string assertions.** The tests cover the escaping/date/parse helpers but
+  NOT the generated AppleScript text itself (the script-builder strings are still inlined in the
+  executor methods). To assert "the create_reminder script is shell-safe / contains no `\'`", first
+  split each "build script" string out of its `async` method into a pure exported builder, then test
+  the string. Low value now that escaping is centralized + tested — but it's the remaining gap.
+- **Backlog — optional live/integration test tier** (env-gated `TEST_LIVE=1`, throwaway
+  list/calendar, self-cleaning) mirroring the manual matrix. Keep it out of default `npm test` so
+  non-Mac/CI runs stay green.
+- **Note for the EventKit track:** EventKit also gives account-type routing via `EKSource` and fixes
+  recurring-event expansion, not just deletion — worth exposing once the port lands.
