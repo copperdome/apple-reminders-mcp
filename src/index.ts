@@ -1,4 +1,4 @@
-// ABOUTME: MCP server for macOS Reminders app integration using AppleScript
+// ABOUTME: MCP server exposing both Apple Reminders and Apple Calendar via AppleScript
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -6,27 +6,21 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
 import { AppleScriptExecutor } from './applescript-executor.js';
+import { CalendarExecutor } from './calendar-executor.js';
 
-class RemindersServer {
+class AppleMCPServer {
   private server: Server;
-  private executor: AppleScriptExecutor;
+  private reminders: AppleScriptExecutor;
+  private calendar: CalendarExecutor;
 
   constructor() {
     this.server = new Server(
-      {
-        name: 'reminders-mcp',
-        version: '1.0.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
+      { name: 'apple-mcp', version: '2.0.0' },
+      { capabilities: { tools: {} } }
     );
-
-    this.executor = new AppleScriptExecutor();
+    this.reminders = new AppleScriptExecutor();
+    this.calendar  = new CalendarExecutor();
     this.setupToolHandlers();
   }
 
@@ -34,95 +28,59 @@ class RemindersServer {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
+          // ── Reminders ──────────────────────────────────────────────
           {
             name: 'list_reminder_lists',
-            description: 'Get all reminder lists available in the Reminders app',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-            },
+            description: 'Get all reminder lists in the Reminders app',
+            inputSchema: { type: 'object', properties: {} },
           },
           {
             name: 'get_reminders',
-            description: 'Get reminders from a specific list or all lists, with optional filtering',
+            description: 'Get reminders from a specific list or all lists. Returns flagged, recurrence, dueDate, priority. Pass searchTerm to filter by text (routes to search internally — prefer search_reminders for pure text search).',
             inputSchema: {
               type: 'object',
               properties: {
-                listName: {
-                  type: 'string',
-                  description: 'Name of the reminder list to search in (optional)',
-                },
-                completed: {
-                  type: 'boolean',
-                  description: 'Filter by completion status (optional)',
-                },
-                searchTerm: {
-                  type: 'string',
-                  description: 'Search term to filter reminders by name or body (optional)',
-                },
+                listName:   { type: 'string',  description: 'Reminder list name (optional)' },
+                completed:  {                  description: 'Filter by completion status (optional, default false)' },
+                searchTerm: { type: 'string',  description: 'Filter by name or body text (optional)' },
               },
             },
           },
           {
             name: 'create_reminder',
-            description: 'Create a new reminder in a specified list',
+            description: 'Create a new reminder. Supports flagged, priority, dueDate, body, and early alarm.',
             inputSchema: {
               type: 'object',
               properties: {
-                name: {
-                  type: 'string',
-                  description: 'Name of the reminder',
-                },
-                listName: {
-                  type: 'string',
-                  description: 'Name of the list to add the reminder to',
-                },
-                body: {
-                  type: 'string',
-                  description: 'Optional body/notes for the reminder',
-                },
-                dueDate: {
-                  type: 'string',
-                  description: 'Optional due date in format "MM/DD/YYYY HH:MM AM/PM"',
-                },
-                priority: {
-                  type: 'number',
-                  description: 'Priority level (0=none, 1=high, 5=medium, 9=low)',
-                },
+                name:                 { type: 'string', description: 'Reminder name' },
+                listName:             { type: 'string', description: 'List to add it to' },
+                body:                 { type: 'string', description: 'Notes/body (optional)' },
+                dueDate:              { type: 'string', description: 'Due date, e.g. "April 8, 2026 at 7:30 AM" (optional)' },
+                priority:             {                 description: '0=none 1=high 5=medium 9=low (optional)' },
+                flagged:              {                 description: 'Flag the reminder (optional)' },
+                tags:                 {                 description: 'Tag strings — not supported by AppleScript, stored for future use' },
+                recurrenceRule:       { type: 'string', description: 'iCalendar RRULE — NOTE: not writable via AppleScript; set manually in Reminders app' },
+                earlyReminderMinutes: {                 description: 'Minutes before due date for early alert (optional)' },
               },
               required: ['name', 'listName'],
             },
           },
           {
             name: 'update_reminder',
-            description: 'Update an existing reminder',
+            description: 'Update a reminder by ID.',
             inputSchema: {
               type: 'object',
               properties: {
-                reminderId: {
-                  type: 'string',
-                  description: 'ID of the reminder to update',
-                },
-                name: {
-                  type: 'string',
-                  description: 'New name for the reminder',
-                },
-                body: {
-                  type: 'string',
-                  description: 'New body/notes for the reminder',
-                },
-                completed: {
-                  type: 'boolean',
-                  description: 'Mark reminder as completed or not',
-                },
-                dueDate: {
-                  type: 'string',
-                  description: 'New due date in format "MM/DD/YYYY HH:MM AM/PM"',
-                },
-                priority: {
-                  type: 'number',
-                  description: 'New priority level (0=none, 1=high, 5=medium, 9=low)',
-                },
+                reminderId:     { type: 'string', description: 'Reminder ID' },
+                name:           { type: 'string' },
+                body:           { type: 'string' },
+                completed:      {                 description: 'Mark complete/incomplete' },
+                dueDate:        { type: 'string' },
+                priority:       {                 description: '0=none 1=high 5=medium 9=low' },
+                flagged:        {                 description: 'Set flagged status' },
+                tags:           {                 description: 'Not supported via AppleScript, ignored' },
+                recurrenceRule: { type: 'string', description: 'Not settable via AppleScript, ignored' },
+                remindMeDate:   { type: 'string', description: 'Explicit remind-me date/time' },
               },
               required: ['reminderId'],
             },
@@ -133,24 +91,103 @@ class RemindersServer {
             inputSchema: {
               type: 'object',
               properties: {
-                reminderId: {
-                  type: 'string',
-                  description: 'ID of the reminder to delete',
-                },
+                reminderId: { type: 'string', description: 'Reminder ID' },
               },
               required: ['reminderId'],
             },
           },
           {
             name: 'search_reminders',
-            description: 'Search for reminders by name or body content',
+            description: 'Search incomplete reminders by name or body text. Equivalent to get_reminders with a searchTerm — use this for quick text searches, get_reminders when you also need to filter by list or completion status.',
             inputSchema: {
               type: 'object',
               properties: {
-                searchTerm: {
-                  type: 'string',
-                  description: 'Term to search for in reminder names and bodies',
-                },
+                searchTerm: { type: 'string', description: 'Text to search for' },
+                listName:   { type: 'string', description: 'Limit search to a specific list (optional — omit to search all lists)' },
+              },
+              required: ['searchTerm'],
+            },
+          },
+
+          // ── Calendar ───────────────────────────────────────────────
+          {
+            name: 'list_calendars',
+            description: 'List all calendars in the Calendar app (name, id, description, writable).',
+            inputSchema: { type: 'object', properties: {} },
+          },
+          {
+            name: 'get_events',
+            description: 'Get events from one or all calendars, with optional date range. Defaults to today + 30 days if no dates provided. Returns uid, summary, dates, location, recurrence, status.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                calendarName: { type: 'string', description: 'Calendar name to filter (optional — omit for all)' },
+                startDate:    { type: 'string', description: 'ISO 8601 start, e.g. "2026-04-08T00:00:00" (optional)' },
+                endDate:      { type: 'string', description: 'ISO 8601 end, e.g. "2026-05-08T23:59:59" (optional)' },
+              },
+            },
+          },
+          {
+            name: 'create_event',
+            description: 'Create a calendar event. Recurrence works via RFC 2445 RRULE strings (unlike Reminders). Returns the new event UID.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                calendarName: { type: 'string', description: 'Calendar to add the event to' },
+                summary:      { type: 'string', description: 'Event title' },
+                startDate:    { type: 'string', description: 'ISO 8601 start, e.g. "2026-04-10T14:00:00"' },
+                endDate:      { type: 'string', description: 'ISO 8601 end, e.g. "2026-04-10T15:00:00"' },
+                description:  { type: 'string', description: 'Event notes (optional)' },
+                location:     { type: 'string', description: 'Event location (optional)' },
+                allDay:       {                 description: 'True for all-day event (optional)' },
+                recurrence:   { type: 'string', description: 'RFC 2445 RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO,WE,FR" (optional). NOTE: recurrence IS writable in Calendar (unlike Reminders).' },
+                url:          { type: 'string', description: 'URL to associate with event (optional)' },
+              },
+              required: ['calendarName', 'summary', 'startDate', 'endDate'],
+            },
+          },
+          {
+            name: 'update_event',
+            description: 'Update a calendar event by UID. Find UIDs with get_events or search_events. Pass calendarName to speed up the UID lookup.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                uid:          { type: 'string', description: 'Event UID (from get_events or create_event)' },
+                calendarName: { type: 'string', description: 'Calendar the event is in — optional but speeds up lookup' },
+                summary:      { type: 'string', description: 'New title (optional)' },
+                description:  { type: 'string', description: 'New notes (optional)' },
+                startDate:    { type: 'string', description: 'New ISO 8601 start (optional)' },
+                endDate:      { type: 'string', description: 'New ISO 8601 end (optional)' },
+                location:     { type: 'string', description: 'New location (optional)' },
+                allDay:       {                 description: 'Change all-day status (optional)' },
+                recurrence:   { type: 'string', description: 'New RRULE or empty string to clear (optional)' },
+                url:          { type: 'string', description: 'New URL (optional)' },
+              },
+              required: ['uid'],
+            },
+          },
+          {
+            name: 'delete_event',
+            description: 'Delete a calendar event by UID. For recurring events, deletes the entire series. Pass calendarName to speed up the UID lookup.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                uid:          { type: 'string', description: 'Event UID' },
+                calendarName: { type: 'string', description: 'Calendar the event is in — optional but speeds up lookup' },
+              },
+              required: ['uid'],
+            },
+          },
+          {
+            name: 'search_events',
+            description: 'Search events by text in summary or description across all (or one) calendar. Defaults to a ±1 year window; pass startDate/endDate to search outside that range.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                searchTerm:   { type: 'string', description: 'Text to search for' },
+                calendarName: { type: 'string', description: 'Limit search to one calendar (optional)' },
+                startDate:    { type: 'string', description: 'ISO 8601 start of search window, e.g. "2024-01-01T00:00:00" (optional, defaults to 1 year ago)' },
+                endDate:      { type: 'string', description: 'ISO 8601 end of search window, e.g. "2027-01-01T00:00:00" (optional, defaults to 1 year from now)' },
               },
               required: ['searchTerm'],
             },
@@ -161,131 +198,140 @@ class RemindersServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
+        const args = (request.params.arguments ?? {}) as Record<string, any>;
+
         switch (request.params.name) {
+
+          // ── Reminders ──────────────────────────────────────────────
+
           case 'list_reminder_lists': {
-            const lists = await this.executor.getReminderLists();
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(lists, null, 2),
-                },
-              ],
-            };
+            const lists = await this.reminders.getReminderLists();
+            return { content: [{ type: 'text', text: JSON.stringify(lists, null, 2) }] };
           }
 
           case 'get_reminders': {
-            const { listName, completed, searchTerm } = request.params.arguments as {
-              listName?: string;
-              completed?: boolean;
-              searchTerm?: string;
-            };
-
+            const listName   = args.listName as string | undefined;
+            const searchTerm = args.searchTerm as string | undefined;
+            const completed  = args.completed !== undefined
+              ? (args.completed === true || args.completed === 'true')
+              : undefined;
             let reminders;
             if (searchTerm) {
-              reminders = await this.executor.searchReminders(searchTerm);
-              // Further filter by list and completion status if specified
-              if (listName) {
-                reminders = reminders.filter(r => r.list === listName);
-              }
-              if (completed !== undefined) {
-                reminders = reminders.filter(r => r.completed === completed);
-              }
+              reminders = await this.reminders.searchReminders(searchTerm);
+              if (listName)   reminders = reminders.filter(r => r.list === listName);
+              if (completed !== undefined) reminders = reminders.filter(r => r.completed === completed);
             } else {
-              reminders = await this.executor.getReminders(listName, completed);
+              reminders = await this.reminders.getReminders(listName, completed);
             }
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(reminders, null, 2),
-                },
-              ],
-            };
+            return { content: [{ type: 'text', text: JSON.stringify(reminders, null, 2) }] };
           }
 
           case 'create_reminder': {
-            const { name, listName, body, dueDate, priority } = request.params.arguments as {
-              name: string;
-              listName: string;
-              body?: string;
-              dueDate?: string;
-              priority?: number;
-            };
-
-            const reminderId = await this.executor.createReminder(
-              name,
-              listName,
-              body,
-              dueDate,
-              priority
+            const reminderId = await this.reminders.createReminder(
+              args.name as string,
+              args.listName as string,
+              args.body as string | undefined,
+              args.dueDate as string | undefined,
+              args.priority !== undefined ? Number(args.priority) : undefined,
+              args.flagged !== undefined ? (args.flagged === true || args.flagged === 'true') : undefined,
+              args.tags !== undefined ? (typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags) : undefined,
+              args.recurrenceRule as string | undefined,
+              args.earlyReminderMinutes !== undefined ? Number(args.earlyReminderMinutes) : undefined,
             );
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Reminder created successfully with ID: ${reminderId}`,
-                },
-              ],
-            };
+            return { content: [{ type: 'text', text: `Reminder created: ${reminderId}` }] };
           }
 
           case 'update_reminder': {
-            const { reminderId, ...updates } = request.params.arguments as {
-              reminderId: string;
-              name?: string;
-              body?: string;
-              completed?: boolean;
-              dueDate?: string;
-              priority?: number;
-            };
-
-            await this.executor.updateReminder(reminderId, updates);
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Reminder ${reminderId} updated successfully`,
-                },
-              ],
-            };
+            const updates: any = {};
+            if (args.name      !== undefined) updates.name      = args.name;
+            if (args.body      !== undefined) updates.body      = args.body;
+            if (args.completed !== undefined) updates.completed = args.completed === true || args.completed === 'true';
+            if (args.dueDate   !== undefined) updates.dueDate   = args.dueDate;
+            if (args.priority  !== undefined) updates.priority  = Number(args.priority);
+            if (args.flagged   !== undefined) updates.flagged   = args.flagged === true || args.flagged === 'true';
+            if (args.tags      !== undefined) updates.tags      = typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags;
+            if (args.recurrenceRule !== undefined) updates.recurrenceRule = args.recurrenceRule;
+            if (args.remindMeDate   !== undefined) updates.remindMeDate   = args.remindMeDate;
+            await this.reminders.updateReminder(args.reminderId as string, updates);
+            return { content: [{ type: 'text', text: `Reminder ${args.reminderId} updated` }] };
           }
 
           case 'delete_reminder': {
-            const { reminderId } = request.params.arguments as {
-              reminderId: string;
-            };
-
-            await this.executor.deleteReminder(reminderId);
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: `Reminder ${reminderId} deleted successfully`,
-                },
-              ],
-            };
+            await this.reminders.deleteReminder(args.reminderId as string);
+            return { content: [{ type: 'text', text: `Reminder ${args.reminderId} deleted` }] };
           }
 
           case 'search_reminders': {
-            const { searchTerm } = request.params.arguments as {
-              searchTerm: string;
-            };
+            const reminders = await this.reminders.searchReminders(
+              args.searchTerm as string,
+              args.listName   as string | undefined,
+            );
+            return { content: [{ type: 'text', text: JSON.stringify(reminders, null, 2) }] };
+          }
 
-            const reminders = await this.executor.searchReminders(searchTerm);
+          // ── Calendar ───────────────────────────────────────────────
 
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(reminders, null, 2),
-                },
-              ],
-            };
+          case 'list_calendars': {
+            const calendars = await this.calendar.getCalendars();
+            return { content: [{ type: 'text', text: JSON.stringify(calendars, null, 2) }] };
+          }
+
+          case 'get_events': {
+            const calendarName = args.calendarName as string | undefined;
+            // Default date window: today to today + 30 days if neither provided
+            const now = new Date();
+            const defaultEnd = new Date(now);
+            defaultEnd.setDate(defaultEnd.getDate() + 30);
+            const startDate = (args.startDate as string | undefined) ?? now.toISOString();
+            const endDate   = (args.endDate   as string | undefined) ?? defaultEnd.toISOString();
+            const events = await this.calendar.getEvents(calendarName, startDate, endDate);
+            return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
+          }
+
+          case 'create_event': {
+            const uid = await this.calendar.createEvent(
+              args.calendarName as string,
+              args.summary      as string,
+              args.startDate    as string,
+              args.endDate      as string,
+              {
+                description: args.description as string | undefined,
+                location:    args.location    as string | undefined,
+                allDay:      args.allDay !== undefined ? (args.allDay === true || args.allDay === 'true') : undefined,
+                recurrence:  args.recurrence  as string | undefined,
+                url:         args.url         as string | undefined,
+              },
+            );
+            return { content: [{ type: 'text', text: `Event created. UID: ${uid}` }] };
+          }
+
+          case 'update_event': {
+            const updates: any = {};
+            if (args.summary     !== undefined) updates.summary     = args.summary;
+            if (args.description !== undefined) updates.description = args.description;
+            if (args.startDate   !== undefined) updates.startDate   = args.startDate;
+            if (args.endDate     !== undefined) updates.endDate     = args.endDate;
+            if (args.location    !== undefined) updates.location    = args.location;
+            if (args.allDay      !== undefined) updates.allDay      = args.allDay === true || args.allDay === 'true';
+            if (args.recurrence  !== undefined) updates.recurrence  = args.recurrence;
+            if (args.url         !== undefined) updates.url         = args.url;
+            await this.calendar.updateEvent(args.uid as string, updates, args.calendarName as string | undefined);
+            return { content: [{ type: 'text', text: `Event ${args.uid} updated` }] };
+          }
+
+          case 'delete_event': {
+            await this.calendar.deleteEvent(args.uid as string, args.calendarName as string | undefined);
+            return { content: [{ type: 'text', text: `Event ${args.uid} deleted` }] };
+          }
+
+          case 'search_events': {
+            const events = await this.calendar.searchEvents(
+              args.searchTerm   as string,
+              args.calendarName as string | undefined,
+              args.startDate    as string | undefined,
+              args.endDate      as string | undefined,
+            );
+            return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
           }
 
           default:
@@ -293,12 +339,7 @@ class RemindersServer {
         }
       } catch (error) {
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
+          content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
@@ -308,9 +349,9 @@ class RemindersServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Reminders MCP server running on stdio');
+    console.error('Apple MCP server running on stdio (Reminders + Calendar)');
   }
 }
 
-const server = new RemindersServer();
+const server = new AppleMCPServer();
 server.run().catch(console.error);
