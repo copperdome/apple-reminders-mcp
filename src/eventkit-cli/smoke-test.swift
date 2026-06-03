@@ -55,9 +55,12 @@ func searchWindow() -> (Date, Date) {
     return (start, end)
 }
 
-// Match an AppleScript "uid" against EventKit. The iCal UID lives in
-// calendarItemExternalIdentifier; also check eventIdentifier as a fallback.
+// Match an AppleScript "uid" against EventKit. Empirically (dump of an event
+// created via the AppleScript MCP) the AppleScript `uid` equals EventKit's
+// `calendarItemIdentifier` — NOT calendarItemExternalIdentifier (the iCal UID)
+// and NOT eventIdentifier. Check that first; keep the others as fallbacks.
 func matches(_ ev: EKEvent, _ uid: String) -> Bool {
+    if ev.calendarItemIdentifier == uid { return true }
     if ev.calendarItemExternalIdentifier == uid { return true }
     if ev.eventIdentifier == uid { return true }
     return false
@@ -94,6 +97,25 @@ func sourceTypeName(_ t: EKSourceType?) -> String {
     }
 }
 
+// Diagnostic: find events whose title contains `text` and dump every identifier
+// field, so we can see how the AppleScript "uid" maps onto EventKit's ids.
+func cmdDump(_ text: String) {
+    let (start, end) = searchWindow()
+    let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+    let evs = store.events(matching: predicate).filter {
+        ($0.title ?? "").localizedCaseInsensitiveContains(text)
+    }
+    print("Matched \(evs.count) event(s) whose title contains \"\(text)\":")
+    for ev in evs.prefix(20) {
+        print("  - title: \(ev.title ?? "(none)")")
+        print("      start: \(ev.startDate?.description ?? "?")  recurring: \(ev.hasRecurrenceRules)  calendar: \(ev.calendar.title)")
+        print("      eventIdentifier:                \(ev.eventIdentifier ?? "nil")")
+        print("      calendarItemIdentifier:         \(ev.calendarItemIdentifier)")
+        print("      calendarItemExternalIdentifier: \(ev.calendarItemExternalIdentifier ?? "nil")")
+    }
+    if evs.count > 20 { print("  … and \(evs.count - 20) more") }
+}
+
 func cmdFind(_ uid: String) {
     let evs = occurrences(forUid: uid)
     print("Matched \(evs.count) occurrence(s) for uid \(uid):")
@@ -128,7 +150,7 @@ func cmdDelete(_ uid: String) {
 
 let args = CommandLine.arguments
 guard args.count >= 2 else {
-    print("usage: ek-smoke <list|find|delete> [uid]")
+    print("usage: ek-smoke <list|dump|find|delete> [uid-or-title]")
     exit(1)
 }
 
@@ -140,6 +162,9 @@ guard requestAccess() else {
 switch args[1] {
 case "list":
     cmdList()
+case "dump":
+    guard args.count >= 3 else { print("dump needs a title substring"); exit(1) }
+    cmdDump(args[2])
 case "find":
     guard args.count >= 3 else { print("find needs a uid"); exit(1) }
     cmdFind(args[2])
