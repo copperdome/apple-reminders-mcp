@@ -10,7 +10,7 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 go/no-go = GO.
+### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 CLI code-complete (live-verify pending).
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
   Latest commit on `main`: **`7a589aa`**. (Direct push to `main` is allowed — no PR flow here.)
@@ -20,6 +20,13 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
   - TRACK 1 ✅ done (`1630c65`) — removed dead `id of cal` fallback in `getCalendars()`.
   - TRACK 2 step 1 (smoke test) ✅ **GO** (`c6611fe`/`7a589aa`) — EventKit deletes a Google
     recurring series where AppleScript can't; confirmed not-regenerated after sync. See TRACK 2 below.
+- **2026-06-03 session #3 progress:**
+  - TRACK 2 step 2 (full Swift CLI) ✅ **code-complete + builds/signs.** Wrote
+    `src/eventkit-cli/main.swift` (6 subcommands → JSON) + `build-eventkit.sh`. Binary compiles,
+    embeds the Info.plist, and codesigns cleanly. The no-TCC paths are verified from Claude's shell
+    (usage guard emits `{"error":…}` exit 1; a data command hits the documented TCC denial → clean
+    `{"error":…}` exit 3). **Live data-command verification (list/get/search/create/update/delete
+    round-trip) still needs John at his own Terminal** — see step 2 verify checklist below.
 - **Loose ends:** (1) the old `[MCP-TEST]` recurring event `7ADB72E8-…` in *Personal* — John may
   still need to delete it in the Calendar UI (or just delete it with the new EventKit smoke CLI:
   `bash src/eventkit-cli/smoke.sh delete 7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` from Terminal — it
@@ -45,8 +52,11 @@ Sequence:
      Description` embedded via linker `-sectcreate` AND a `codesign --force --sign -` re-sign to
      *bind* it, and must be run from the user's own Terminal (TCC attributes to the responsible GUI
      app; from Claude's shell it's denied silently). `smoke.sh` handles build+sign.
-  2. **◀ YOU ARE HERE — build the full Swift CLI.** Expand `src/eventkit-cli/` from the smoke test
-     into a real CLI. Concrete plan:
+  2. **Build the full Swift CLI. ✅ DONE (code) 2026-06-03 session #3 — live-verify pending.**
+     `src/eventkit-cli/main.swift` implements all 6 subcommands below; `build-eventkit.sh` compiles +
+     signs it to `build/eventkit-cli`. Builds clean; no-TCC paths verified. **◀ YOU ARE HERE: live
+     data-command verification (needs John at Terminal) — see the verify checklist at the end of this
+     step.** Original concrete plan (now implemented — kept for reference):
      - **New file `src/eventkit-cli/main.swift`** (keep `smoke-test.swift` as-is for reference, or
        delete once the CLI subsumes it). Reuse the proven scaffolding from `smoke-test.swift`:
        `requestFullAccessToEvents` via semaphore, the `matches()` helper (uid ==
@@ -82,9 +92,31 @@ Sequence:
        Decide where the binary lives at runtime (ship-built in repo? build on `npm run build`? a
        `postbuild` step?) — simplest: commit a `build-eventkit.sh`, run it in `npm run build`, and
        have CalendarExecutor resolve the binary path relative to `__dirname`.
-     - **Verify (needs John at Terminal):** before the Node swap, exercise each subcommand directly:
-       `bash src/eventkit-cli/build-eventkit.sh && build/eventkit-cli list-calendars | jq` etc.,
-       round-trip a create→get→update→delete on a throwaway `[EK-TEST]` event in *Personal*.
+     - **Verify (needs John at Terminal) — DO THIS NEXT, before the Node swap.** From your own
+       Terminal.app (TCC denies from Claude's shell). First run pops the Full Calendar Access dialog —
+       click Allow. Each command prints one JSON value to stdout (`{"error":…}` + nonzero exit on
+       failure). Run the build script with a subcommand to build-then-run in one step:
+       ```
+       cd ~/apple-reminders-mcp
+       bash src/eventkit-cli/build-eventkit.sh list-calendars | jq        # real ids + writable
+       D=src/eventkit-cli/build/eventkit-cli
+       $D get-events --calendar Personal --start 2026-06-01T00:00:00Z --end 2026-07-01T00:00:00Z | jq
+       $D create-event --calendar Personal --summary "[EK-TEST] roundtrip" \
+          --start 2026-06-10T15:00:00Z --end 2026-06-10T16:00:00Z | jq      # note the uid
+       $D search-events --term EK-TEST --calendar Personal | jq
+       $D update-event --uid <UID> --summary "[EK-TEST] updated" --location "Desk" | jq
+       $D delete-event --uid <UID> | jq                                     # {"deleted":true}
+       # Recurring: create with --recurrence "FREQ=WEEKLY;COUNT=4", get-events to see 4 occurrences,
+       # then delete-event --uid <UID> (default span futureEvents) and re-get → 0. This is the row
+       # AppleScript could never pass.
+       ```
+       Report back: do real `id`s come through, does the recurring create/delete round-trip cleanly,
+       and does `recurrence` serialize back to a sane RRULE on get-events?
+     - **⚠️ Open question to settle during step 2/3 (don't skip):** when the Node server *inside
+       Claude Desktop* spawns this binary, the TCC grant is attributed to **Claude Desktop**, not
+       Terminal. Confirm Claude Desktop has (or can be granted) Full Calendar Access so the spawned
+       binary works in production — test BEFORE finishing the step-3 Node swap, or the live MCP path
+       will be denied silently the same way Claude's shell is.
   3. Swap CalendarExecutor's AppleScript paths for `execAsync` calls to the CLI. Keep the
      `CalendarExecutor` class, `CalendarEvent`/`CalendarInfo` types, and `index.ts` handlers identical
      — only the implementation changes. **Extract any new pure TS** (building the arg list, parsing
