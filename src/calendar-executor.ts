@@ -59,16 +59,12 @@ export class CalendarExecutor {
             set calName to name of cal as string
           end try
           try
+            -- NOTE: returns "" on this account's CalDAV/Google calendars (verified
+            -- 2026-06-03). An "id of cal" fallback was tried and confirmed to also
+            -- yield "" — neither term resolves an id here. Targeting is by name
+            -- everywhere, so a blank id is cosmetic.
             set calId to calendarIdentifier of cal as string
           end try
-          if calId is "" then
-            -- Fallback: the calendarIdentifier four-char code is "ID  ", so the generic
-            -- id term resolves to the same value when calendarIdentifier returns empty
-            -- (observed on some CalDAV/Google-backed calendars).
-            try
-              set calId to id of cal as string
-            end try
-          end if
           try
             set calDesc to description of cal as string
           end try
