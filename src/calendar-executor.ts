@@ -2,6 +2,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { escAS, isoToAppleScriptDate, parseEvents, interpretDeleteResult } from './applescript-util.js';
 
 const execAsync = promisify(exec);
 
@@ -41,51 +42,6 @@ export class CalendarExecutor {
       }
       throw new Error(`AppleScript execution failed: ${error}`);
     }
-  }
-
-  /** Convert an ISO 8601 string or a Date object to the "Month D, YYYY at H:MM AM/PM"
-   *  format that AppleScript's `date` keyword reliably accepts on US-locale Macs.
-   *  Accepting a Date directly avoids the UTC-roundtrip that toISOString() introduces
-   *  when computing internal date windows. */
-  private isoToAppleScriptDate(dateOrStr: string | Date): string {
-    const d = typeof dateOrStr === 'string' ? new Date(dateOrStr) : dateOrStr;
-    if (isNaN(d.getTime())) {
-      // If it already looks like an AppleScript date string, pass through
-      return typeof dateOrStr === 'string' ? dateOrStr : '';
-    }
-    const months = [
-      'January','February','March','April','May','June',
-      'July','August','September','October','November','December'
-    ];
-    const month = months[d.getMonth()];
-    const day = d.getDate();
-    const year = d.getFullYear();
-    let hours = d.getHours();
-    const minutes = d.getMinutes().toString().padStart(2, '0');
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${month} ${day}, ${year} at ${hours}:${minutes} ${ampm}`;
-  }
-
-  private parseEvents(result: string): CalendarEvent[] {
-    if (!result) return [];
-    return result.split('§REC§').filter(l => l.trim()).map(line => {
-      const p = line.split('§§§');
-      const restoreNewlines = (s: string) => s.replace(/\\n/g, '\n');
-      return {
-        uid:         p[0]  || '',
-        summary:     p[1]  || '',
-        description: (p[2]  && p[2]  !== 'missing value') ? restoreNewlines(p[2])  : undefined,
-        startDate:   p[3]  || '',
-        endDate:     p[4]  || '',
-        allDay:      p[5]  === 'true',
-        location:    (p[6]  && p[6]  !== 'missing value') ? restoreNewlines(p[6])  : undefined,
-        status:      p[7]  || '',
-        recurrence:  (p[8]  && p[8]  !== 'missing value' && p[8] !== '') ? p[8] : undefined,
-        url:         (p[9]  && p[9]  !== 'missing value') ? p[9]  : undefined,
-        calendar:    p[10] || '',
-      };
-    });
   }
 
   async getCalendars(): Promise<CalendarInfo[]> {
@@ -147,10 +103,10 @@ export class CalendarExecutor {
 
     // Build date filter. If no dates given, TypeScript layer always supplies them.
     const startBlock = startDate
-      ? `set startFilter to date "${this.isoToAppleScriptDate(startDate)}"`
+      ? `set startFilter to date "${isoToAppleScriptDate(startDate)}"`
       : `set startFilter to missing value`;
     const endBlock = endDate
-      ? `set endFilter to date "${this.isoToAppleScriptDate(endDate)}"`
+      ? `set endFilter to date "${isoToAppleScriptDate(endDate)}"`
       : `set endFilter to missing value`;
 
     const script = `
@@ -227,7 +183,7 @@ export class CalendarExecutor {
       end tell
     `;
     const result = await this.executeScript(script);
-    return this.parseEvents(result);
+    return parseEvents(result);
   }
 
   async createEvent(
@@ -243,19 +199,19 @@ export class CalendarExecutor {
       url?: string;
     }
   ): Promise<string> {
-    const startStr = this.isoToAppleScriptDate(startDate);
-    const endStr   = this.isoToAppleScriptDate(endDate);
+    const startStr = isoToAppleScriptDate(startDate);
+    const endStr   = isoToAppleScriptDate(endDate);
 
     const props: string[] = [
-      `summary:"${summary.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+      `summary:"${escAS(summary)}"`,
       `start date:date "${startStr}"`,
       `end date:date "${endStr}"`,
     ];
     if (options?.allDay)       props.push('allday event:true');
-    if (options?.description)  props.push(`description:"${options.description.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
-    if (options?.location)     props.push(`location:"${options.location.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
-    if (options?.recurrence)   props.push(`recurrence:"${options.recurrence.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
-    if (options?.url)          props.push(`url:"${options.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+    if (options?.description)  props.push(`description:"${escAS(options.description)}"`);
+    if (options?.location)     props.push(`location:"${escAS(options.location)}"`);
+    if (options?.recurrence)   props.push(`recurrence:"${escAS(options.recurrence)}"`);
+    if (options?.url)          props.push(`url:"${escAS(options.url)}"`);
 
     const script = `
       tell application "Calendar"
@@ -284,21 +240,21 @@ export class CalendarExecutor {
   ): Promise<void> {
     const cmds: string[] = [];
     if (updates.summary !== undefined)
-      cmds.push(`set summary of targetEvent to "${updates.summary.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      cmds.push(`set summary of targetEvent to "${escAS(updates.summary)}"`);
     if (updates.description !== undefined)
-      cmds.push(`set description of targetEvent to "${updates.description.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      cmds.push(`set description of targetEvent to "${escAS(updates.description)}"`);
     if (updates.startDate !== undefined)
-      cmds.push(`set start date of targetEvent to date "${this.isoToAppleScriptDate(updates.startDate)}"`);
+      cmds.push(`set start date of targetEvent to date "${isoToAppleScriptDate(updates.startDate)}"`);
     if (updates.endDate !== undefined)
-      cmds.push(`set end date of targetEvent to date "${this.isoToAppleScriptDate(updates.endDate)}"`);
+      cmds.push(`set end date of targetEvent to date "${isoToAppleScriptDate(updates.endDate)}"`);
     if (updates.location !== undefined)
-      cmds.push(`set location of targetEvent to "${updates.location.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      cmds.push(`set location of targetEvent to "${escAS(updates.location)}"`);
     if (updates.allDay !== undefined)
       cmds.push(`set allday event of targetEvent to ${updates.allDay}`);
     if (updates.recurrence !== undefined)
-      cmds.push(`set recurrence of targetEvent to "${updates.recurrence.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      cmds.push(`set recurrence of targetEvent to "${escAS(updates.recurrence)}"`);
     if (updates.url !== undefined)
-      cmds.push(`set url of targetEvent to "${updates.url.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      cmds.push(`set url of targetEvent to "${escAS(updates.url)}"`);
 
     if (cmds.length === 0) return;
 
@@ -364,16 +320,7 @@ export class CalendarExecutor {
       end tell
     `;
     const result = await this.executeScript(script);
-    if (result === 'NOTFOUND') {
-      throw new Error(`Event UID not found: ${uid}`);
-    }
-    if (result === 'PERSISTED') {
-      throw new Error(
-        `Delete reported success but event ${uid} still exists. This is a known ` +
-        `AppleScript limitation for recurring series on CalDAV/Google-backed calendars ` +
-        `(e.g. "Personal"). Delete the series in the Calendar app UI instead.`
-      );
-    }
+    interpretDeleteResult(result, uid);
   }
 
   async searchEvents(searchTerm: string, calendarName?: string, startDate?: string, endDate?: string): Promise<CalendarEvent[]> {
@@ -388,8 +335,8 @@ export class CalendarExecutor {
     const resolvedEnd   = endDate   ? new Date(endDate)   : (() => { const d = new Date(now); d.setFullYear(d.getFullYear() + 1); return d; })();
     // Pass Date objects directly — avoids the toISOString() UTC roundtrip that would
     // shift times in non-UTC timezones.
-    const startStr = this.isoToAppleScriptDate(resolvedStart);
-    const endStr   = this.isoToAppleScriptDate(resolvedEnd);
+    const startStr = isoToAppleScriptDate(resolvedStart);
+    const endStr   = isoToAppleScriptDate(resolvedEnd);
 
     const script = `
       tell application "Calendar"
@@ -462,6 +409,6 @@ export class CalendarExecutor {
       end tell
     `;
     const result = await this.executeScript(script);
-    return this.parseEvents(result);
+    return parseEvents(result);
   }
 }

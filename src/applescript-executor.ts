@@ -2,6 +2,7 @@
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { escAS, parseReminders } from './applescript-util.js';
 
 const execAsync = promisify(exec);
 
@@ -22,16 +23,9 @@ export interface Reminder {
   modificationDate: string;
   flagged: boolean;
   tags: string[];
-  recurrence?: string;
 }
 
 export class AppleScriptExecutor {
-  // Escape a string for safe inclusion inside an AppleScript double-quoted literal.
-  // Order matters: backslashes first, then double quotes.
-  private escAS(s: string): string {
-    return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  }
-
   private async executeScript(script: string): Promise<string> {
     try {
       // Use a single-quoted heredoc (same pattern as CalendarExecutor) instead of
@@ -52,28 +46,6 @@ export class AppleScriptExecutor {
       }
       throw new Error(`AppleScript execution failed: ${error}`);
     }
-  }
-
-  private parseReminders(result: string): Reminder[] {
-    if (!result) return [];
-    const reminderLines = result.split('\n').filter(line => line.trim());
-    return reminderLines.map(line => {
-      const parts = line.split('\u00a7\u00a7\u00a7');
-      return {
-        name: parts[0] || '',
-        body: (parts[1] && parts[1] !== 'missing value') ? parts[1] : undefined,
-        completed: parts[2] === 'true',
-        list: parts[3] || '',
-        id: parts[4] || '',
-        creationDate: parts[5] || '',
-        modificationDate: parts[6] || '',
-        priority: parseInt(parts[7]) || 0,
-        dueDate: (parts[8] && parts[8] !== 'missing value') ? parts[8] : undefined,
-        tags: [],
-        flagged: parts[9] === 'true',
-        recurrence: (parts[10] && parts[10] !== 'missing value' && parts[10] !== '') ? parts[10] : undefined,
-      };
-    });
   }
 
   async getReminderLists(): Promise<RemindersList[]> {
@@ -108,10 +80,10 @@ export class AppleScriptExecutor {
 
   async getReminders(listName?: string, completed?: boolean): Promise<Reminder[]> {
     const completedVal = completed !== undefined ? completed : false;
-    const listFilter = listName ? `in list "${this.escAS(listName)}"` : '';
+    const listFilter = listName ? `in list "${escAS(listName)}"` : '';
     // Use "properties of rem" to fetch all scalar props in one Apple Event per reminder
-    // instead of 11 individual property accesses \u2014 ~3-4x faster for large lists.
-    // container name and recurrence still require separate calls.
+    // instead of individual property accesses \u2014 ~3-4x faster for large lists.
+    // container name still requires a separate call.
     const script = `
       tell application "Reminders"
         set targetReminders to every reminder ${listFilter} whose completed is ${completedVal}
@@ -119,8 +91,7 @@ export class AppleScriptExecutor {
         repeat with rem in targetReminders
           set props to properties of rem
           -- Reminders have NO recurrence property in the AppleScript dictionary
-          -- (verified against reminders-dictionary.md). Always empty.
-          set recurrenceStr to ""
+          -- (verified against reminders-dictionary.md), so none is emitted.
           set dueDateStr to "missing value"
           if (due date of props) is not missing value then
             set dueDateStr to (due date of props) as string
@@ -135,7 +106,6 @@ export class AppleScriptExecutor {
           set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & (priority of props as string)
           set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & dueDateStr
           set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & (flagged of props as string)
-          set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & recurrenceStr
           if reminderOutput is not "" then
             set reminderOutput to reminderOutput & (character id 10)
           end if
@@ -145,7 +115,7 @@ export class AppleScriptExecutor {
       end tell
     `;
     const result = await this.executeScript(script);
-    return this.parseReminders(result);
+    return parseReminders(result);
   }
 
   async createReminder(
@@ -156,16 +126,15 @@ export class AppleScriptExecutor {
     priority?: number,
     flagged?: boolean,
     tags?: string[],
-    recurrenceRule?: string,
     earlyReminderMinutes?: number
   ): Promise<string> {
     // Duplicate guard: if a reminder with this name was created in the last 2 minutes
     // in the same list, return its ID instead of creating a new one. This handles the
     // common case where create succeeded but the MCP response timed out — retrying would
     // otherwise produce a duplicate.
-    const safeName = this.escAS(name);
-    const safeList = this.escAS(listName);
-    const safeDue  = dueDate ? this.escAS(dueDate) : '';
+    const safeName = escAS(name);
+    const safeList = escAS(listName);
+    const safeDue  = dueDate ? escAS(dueDate) : '';
     const checkScript = `
       tell application "Reminders"
         set targetList to list "${safeList}"
@@ -182,13 +151,13 @@ export class AppleScriptExecutor {
       return checkResult.slice(7); // Return the existing reminder's ID
     }
 
-    const bodyScript = body ? `set body of newReminder to "${this.escAS(body)}"` : '';
+    const bodyScript = body ? `set body of newReminder to "${escAS(body)}"` : '';
     const dueDateScript = dueDate ? `set due date of newReminder to date "${safeDue}"` : '';
     const priorityScript = priority !== undefined ? `set priority of newReminder to ${priority}` : '';
     const flaggedScript = flagged ? `set flagged of newReminder to true` : '';
-    // recurrence is NOT settable via AppleScript (no such property on reminder in the
-    // dictionary). Set recurrence manually in the Reminders app after creation.
-    const recurrenceScript = '';
+    // Reminders have NO recurrence property in the AppleScript dictionary, so it is
+    // neither settable here nor exposed on the tool schema (set recurrence manually in
+    // the Reminders app if needed).
     // Use "remind me date" (official dict property) instead of alarm objects
     const remindMeScript = (dueDate && earlyReminderMinutes)
       ? `set remind me date of newReminder to (date "${safeDue}") - ${earlyReminderMinutes * 60}`
@@ -202,7 +171,6 @@ export class AppleScriptExecutor {
         ${dueDateScript}
         ${priorityScript}
         ${flaggedScript}
-        ${recurrenceScript}
         ${remindMeScript}
         return id of newReminder
       end tell
@@ -220,22 +188,20 @@ export class AppleScriptExecutor {
       priority?: number;
       flagged?: boolean;
       tags?: string[];
-      recurrenceRule?: string;
       remindMeDate?: string;
     }
   ): Promise<void> {
     const updateCommands: string[] = [];
-    if (updates.name) updateCommands.push(`set name of targetReminder to "${this.escAS(updates.name)}"`);
-    if (updates.body !== undefined) updateCommands.push(`set body of targetReminder to "${this.escAS(updates.body)}"`);
+    if (updates.name) updateCommands.push(`set name of targetReminder to "${escAS(updates.name)}"`);
+    if (updates.body !== undefined) updateCommands.push(`set body of targetReminder to "${escAS(updates.body)}"`);
     if (updates.completed !== undefined) updateCommands.push(`set completed of targetReminder to ${updates.completed}`);
-    if (updates.dueDate) updateCommands.push(`set due date of targetReminder to date "${this.escAS(updates.dueDate)}"`);
+    if (updates.dueDate) updateCommands.push(`set due date of targetReminder to date "${escAS(updates.dueDate)}"`);
     if (updates.priority !== undefined) updateCommands.push(`set priority of targetReminder to ${updates.priority}`);
     if (updates.flagged !== undefined) updateCommands.push(`set flagged of targetReminder to ${updates.flagged}`);
-    // recurrence is NOT settable via AppleScript — silently skip
-    if (updates.remindMeDate) updateCommands.push(`set remind me date of targetReminder to date "${this.escAS(updates.remindMeDate)}"`);
+    if (updates.remindMeDate) updateCommands.push(`set remind me date of targetReminder to date "${escAS(updates.remindMeDate)}"`);
     const script = `
       tell application "Reminders"
-        set targetReminder to reminder id "${this.escAS(reminderId)}"
+        set targetReminder to reminder id "${escAS(reminderId)}"
         ${updateCommands.join('\n        ')}
       end tell
     `;
@@ -245,7 +211,7 @@ export class AppleScriptExecutor {
   async deleteReminder(reminderId: string): Promise<void> {
     const script = `
       tell application "Reminders"
-        delete reminder id "${this.escAS(reminderId)}"
+        delete reminder id "${escAS(reminderId)}"
       end tell
     `;
     await this.executeScript(script);
@@ -255,8 +221,8 @@ export class AppleScriptExecutor {
     // Same "properties of rem" optimization as getReminders.
     // The name/body contains check still requires individual access on the first pass,
     // but once we have a match we batch the remaining properties.
-    const safeTerm = this.escAS(searchTerm);
-    const listFilter = listName ? `in list "${this.escAS(listName)}"` : '';
+    const safeTerm = escAS(searchTerm);
+    const listFilter = listName ? `in list "${escAS(listName)}"` : '';
     const script = `
       tell application "Reminders"
         set allReminders to every reminder ${listFilter} whose completed is false
@@ -266,8 +232,7 @@ export class AppleScriptExecutor {
           set remName to name of props as string
           set remBody to body of props as string
           if remName contains "${safeTerm}" or remBody contains "${safeTerm}" then
-            -- Reminders have no recurrence property in the dictionary; always empty.
-            set recurrenceStr to ""
+            -- Reminders have no recurrence property in the dictionary, so none is emitted.
             set dueDateStr to "missing value"
             if (due date of props) is not missing value then
               set dueDateStr to (due date of props) as string
@@ -282,7 +247,6 @@ export class AppleScriptExecutor {
             set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & (priority of props as string)
             set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & dueDateStr
             set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & (flagged of props as string)
-            set reminderInfo to reminderInfo & "\u00a7\u00a7\u00a7" & recurrenceStr
             if reminderOutput is not "" then
               set reminderOutput to reminderOutput & (character id 10)
             end if
@@ -293,6 +257,6 @@ export class AppleScriptExecutor {
       end tell
     `;
     const result = await this.executeScript(script);
-    return this.parseReminders(result);
+    return parseReminders(result);
   }
 }

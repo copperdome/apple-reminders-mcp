@@ -28,7 +28,7 @@ doc). Reminders stays on AppleScript.
 
 ---
 
-## ⚠️ State right now (2026-06-03 session)
+## ⚠️ State right now
 
 A deep verification + bug-test pass was run against the **live** MCP, and several real bugs
 were found and fixed in `src/`. **The fixes are compiled into `dist/` but NOT live yet —
@@ -36,6 +36,29 @@ they require a Claude Desktop restart.** Until then the running server still has
 behavior (notably: apostrophes in reminders break).
 
 After restart, re-run the **post-restart verification** section below to confirm the fixes.
+
+### Update — test-harness session (after the 2026-06-03 audit)
+Committed. This session set up the test harness and did the schema cleanup that the prior
+handoff deferred. No live-MCP behavior changed beyond the recurrence-field removal (still
+needs a restart to go live). What changed:
+- **vitest harness** added: `npm test` (→ `vitest run`) and `npm test:watch`. Tests live in
+  `test/` (excluded from `tsc`, so `dist/` stays clean). **31 tests, all green.**
+- **Pure logic extracted** to `src/applescript-util.ts`: `escAS`, `isoToAppleScriptDate`,
+  `parseReminders`, `parseEvents`, plus a new `interpretDeleteResult` (the OK/NOTFOUND/PERSISTED
+  branch mapping from `deleteEvent`, now unit-testable). Both executors import from it; the
+  duplicated private copies are gone. Calendar's 10 inline `.replace(…)` escapes were
+  centralized onto `escAS` (behavior-identical, now under test).
+- **Regression tests** cover the 2026-06-03 bugs: apostrophe pass-through in `escAS` (the
+  critical shell bug), backslash-before-quote ordering, `isoToAppleScriptDate` no-UTC-drift +
+  AM/PM/midnight/noon + unparseable pass-through, `§§§`/`§REC§` parsing + `missing value` +
+  newline restoration, and the PERSISTED/NOTFOUND delete branches.
+- **Phantom reminder recurrence removed** (the deferred schema cleanup): dropped from the
+  `create_reminder`/`update_reminder` schemas + `get_reminders` description, the `createReminder`/
+  `updateReminder` signatures, the `Reminder` interface, `parseReminders`, and the AppleScript
+  (reminder lines now emit 10 §§§ fields, name…flagged). Calendar recurrence is untouched (it's real).
+- CLAUDE.md workflow note updated: `npm test` + `npm run build` before restart.
+
+Still pending the same Claude Desktop restart + the post-restart verification below.
 
 ---
 
@@ -143,33 +166,23 @@ limitation). Delete it in the Calendar app UI.
 
 ## Remaining / next
 
-- **Set up a test harness (HIGH PRIORITY — every bug this session was in testable TS).**
-  The AppleScript itself can't run without a Mac + the live apps, but the TypeScript layer
-  that *generates* and *parses* it is pure and unit-testable — and that's exactly where the
-  bugs were (shell/AS escaping, date formatting, delimiter parsing). Plan:
-  - Add a runner: `vitest` (or `node --test`) + `ts` support; `npm test` script.
-  - **Refactor for testability:** extract the pure pieces so they don't require `osascript`.
-    Make `escAS`, `isoToAppleScriptDate`, `parseReminders`, `parseEvents`, and the
-    script-builder strings injectable/exported (e.g. split "build script" from "exec script"
-    so tests assert on the generated AppleScript without running it).
-  - **Regression tests for the bugs found 2026-06-03:**
-    - Reminder name/body/list/searchTerm with apostrophes (`Mom's`), double quotes,
-      backslashes → generated script is shell-safe (heredoc) and AS-escaped; no `\'`.
-    - `isoToAppleScriptDate` round-trips ISO + `Date` without UTC drift; handles already-AS
-      date strings.
-    - `parseReminders` / `parseEvents` handle `§§§` / `§REC§` delimiters, `missing value`,
-      empty recurrence, newline restoration.
-    - `deleteEvent` returns OK / NOTFOUND / PERSISTED branches map to the right outcomes.
-  - **Optional live/integration tier:** a separate, opt-in suite (env-gated, `TEST_LIVE=1`)
-    that exercises the real MCP against a dedicated throwaway list/calendar and cleans up
-    after itself — mirrors the manual matrix in this file. Keep it out of the default
-    `npm test` so CI/non-Mac runs stay green.
-  - Wire `npm test` into the workflow note in CLAUDE.md (build + test before restart).
+- **Test harness — ✅ DONE (vitest, 31 green).** `escAS`, `isoToAppleScriptDate`,
+  `parseReminders`, `parseEvents`, and `interpretDeleteResult` are extracted to
+  `src/applescript-util.ts` and unit-tested in `test/applescript-util.test.ts`. Covers all the
+  2026-06-03 bugs (apostrophe pass-through, escape ordering, date no-UTC-drift, delimiter
+  parsing, delete branches). `npm test` wired into CLAUDE.md.
+  - **Still not done — pure-script-string assertions.** The tests cover escaping/date/parse
+    helpers but NOT the generated AppleScript text itself (the script-builder strings are still
+    inlined in the executor methods, not extracted). If you want to assert "the create_reminder
+    script is shell-safe / contains no `\'`", split each "build script" string out of its
+    `async` method into a pure exported builder first, then test the string. Lower value now
+    that escaping is centralized + tested, but it's the remaining gap.
+  - **Still not done — optional live/integration tier** (env-gated `TEST_LIVE=1`, throwaway
+    list/calendar, self-cleaning) mirroring the manual matrix. Keep it out of default `npm test`.
 - **After restart:** run the 4 verification steps above; update this file with results.
-- **Tool descriptions (`index.ts`):** `get_reminders` description still says "Returns flagged,
-  recurrence, dueDate, priority" and the create/update schemas still list `recurrenceRule` for
-  reminders. Reminders have no recurrence — consider trimming these from the schema to stop
-  advertising a no-op field. (Left as-is this session to avoid touching the live schema mid-audit.)
+- **Tool descriptions (`index.ts`) — ✅ DONE.** `get_reminders` no longer advertises
+  recurrence; `recurrenceRule` removed from the `create_reminder`/`update_reminder` schemas and
+  handlers. (Reminders have no recurrence.) Calendar's `recurrence` is untouched.
 - **Recurring delete on CalDAV — researched 2026-06-03, see `docs/RESEARCH-caldav-recurring-delete.md`.**
   Conclusion: it is NOT fixable in AppleScript (structural — AppleScript `delete` only writes an
   EXDATE for one occurrence, and CalDAV/Google masters are non-local + server-authoritative).

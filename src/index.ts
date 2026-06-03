@@ -36,7 +36,7 @@ class AppleMCPServer {
           },
           {
             name: 'get_reminders',
-            description: 'Get reminders from a specific list or all lists. Returns flagged, recurrence, dueDate, priority. Pass searchTerm to filter by text (routes to search internally — prefer search_reminders for pure text search).',
+            description: 'Get reminders from a specific list or all lists. Returns flagged, dueDate, priority. Pass searchTerm to filter by text (routes to search internally — prefer search_reminders for pure text search).',
             inputSchema: {
               type: 'object',
               properties: {
@@ -59,7 +59,6 @@ class AppleMCPServer {
                 priority:             {                 description: '0=none 1=high 5=medium 9=low (optional)' },
                 flagged:              {                 description: 'Flag the reminder (optional)' },
                 tags:                 {                 description: 'Tag strings — not supported by AppleScript, stored for future use' },
-                recurrenceRule:       { type: 'string', description: 'iCalendar RRULE — NOTE: not writable via AppleScript; set manually in Reminders app' },
                 earlyReminderMinutes: {                 description: 'Minutes before due date for early alert (optional)' },
               },
               required: ['name', 'listName'],
@@ -79,7 +78,6 @@ class AppleMCPServer {
                 priority:       {                 description: '0=none 1=high 5=medium 9=low' },
                 flagged:        {                 description: 'Set flagged status' },
                 tags:           {                 description: 'Not supported via AppleScript, ignored' },
-                recurrenceRule: { type: 'string', description: 'Not settable via AppleScript, ignored' },
                 remindMeDate:   { type: 'string', description: 'Explicit remind-me date/time' },
               },
               required: ['reminderId'],
@@ -235,7 +233,6 @@ class AppleMCPServer {
               args.priority !== undefined ? Number(args.priority) : undefined,
               args.flagged !== undefined ? (args.flagged === true || args.flagged === 'true') : undefined,
               args.tags !== undefined ? (typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags) : undefined,
-              args.recurrenceRule as string | undefined,
               args.earlyReminderMinutes !== undefined ? Number(args.earlyReminderMinutes) : undefined,
             );
             return { content: [{ type: 'text', text: `Reminder created: ${reminderId}` }] };
@@ -250,7 +247,6 @@ class AppleMCPServer {
             if (args.priority  !== undefined) updates.priority  = Number(args.priority);
             if (args.flagged   !== undefined) updates.flagged   = args.flagged === true || args.flagged === 'true';
             if (args.tags      !== undefined) updates.tags      = typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags;
-            if (args.recurrenceRule !== undefined) updates.recurrenceRule = args.recurrenceRule;
             if (args.remindMeDate   !== undefined) updates.remindMeDate   = args.remindMeDate;
             await this.reminders.updateReminder(args.reminderId as string, updates);
             return { content: [{ type: 'text', text: `Reminder ${args.reminderId} updated` }] };
