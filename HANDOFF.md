@@ -10,17 +10,20 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-### Current state — clean, committed, verified (no outstanding fixes)
-- **Working tree is clean. Everything is committed and pushed.** `origin` was repointed to the
-  fork **`copperdome/apple-reminders-mcp`** (push there); `upstream` = `dbmcco/apple-reminders-mcp`
-  (copperdome has no write access to it). Latest commit on `main`: **`be85a23`**.
+### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 go/no-go = GO.
+- **Working tree is clean. Everything is committed and pushed** to `origin` =
+  **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
+  Latest commit on `main`: **`7a589aa`**. (Direct push to `main` is allowed — no PR flow here.)
 - `npm test` → **31 green** (vitest; tests in `test/`, pure helpers in `src/applescript-util.ts`).
-  `npm run build` → green. `dist/` is fresh.
-- **Claude Desktop was restarted and the live MCP was verified** (see "Post-restart verification"
-  below): the critical apostrophe fix works, the honest recurring-delete error works, and the
-  reminder-recurrence schema cleanup is live. **All 2026-06-03 audit bugs are fixed AND verified.**
-- The only manual loose end: **John is deleting the lingering `[MCP-TEST]` recurring event**
-  (`7ADB72E8-…`) in the Calendar UI by hand (MCP can't remove a CalDAV recurring series).
+  `npm run build` → green. `dist/` is fresh. (Swift files in `src/eventkit-cli/` are outside `tsc`.)
+- **2026-06-03 session #2 progress:**
+  - TRACK 1 ✅ done (`1630c65`) — removed dead `id of cal` fallback in `getCalendars()`.
+  - TRACK 2 step 1 (smoke test) ✅ **GO** (`c6611fe`/`7a589aa`) — EventKit deletes a Google
+    recurring series where AppleScript can't; confirmed not-regenerated after sync. See TRACK 2 below.
+- **Loose ends:** (1) the old `[MCP-TEST]` recurring event `7ADB72E8-…` in *Personal* — John may
+  still need to delete it in the Calendar UI (or just delete it with the new EventKit smoke CLI:
+  `bash src/eventkit-cli/smoke.sh delete 7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` from Terminal — it
+  should now work via EventKit). The throwaway `[EK-SMOKE]` event from the go/no-go is already gone.
 
 ### Next work — 3 tracks, IN ORDER. Each track: code → `npm test && npm run build` → commit → push.
 
@@ -42,13 +45,66 @@ Sequence:
      Description` embedded via linker `-sectcreate` AND a `codesign --force --sign -` re-sign to
      *bind* it, and must be run from the user's own Terminal (TCC attributes to the responsible GUI
      app; from Claude's shell it's denied silently). `smoke.sh` handles build+sign.
-  2. Build a Swift CLI (`src/eventkit-cli/` or similar) with subcommands mirroring CalendarExecutor:
-     list-calendars, get-events, create-event, update-event, delete-event, search-events. JSON to stdout.
+  2. **◀ YOU ARE HERE — build the full Swift CLI.** Expand `src/eventkit-cli/` from the smoke test
+     into a real CLI. Concrete plan:
+     - **New file `src/eventkit-cli/main.swift`** (keep `smoke-test.swift` as-is for reference, or
+       delete once the CLI subsumes it). Reuse the proven scaffolding from `smoke-test.swift`:
+       `requestFullAccessToEvents` via semaphore, the `matches()` helper (uid ==
+       `calendarItemIdentifier` first), `searchWindow()`, and `sourceTypeName()`.
+     - **Subcommands → emit JSON to stdout** (one JSON value per call; errors as
+       `{"error":"…"}` to stdout + nonzero exit). Match the existing TS types exactly:
+       - `list-calendars` → `[{name,id,description,writable}]` (CalendarInfo). Use
+         `calendar.calendarIdentifier` for `id` (EventKit DOES populate it, unlike AppleScript —
+         the smoke `list` confirmed real ids), `allowsContentModifications` for `writable`. Bonus:
+         also expose `source`/`sourceType` (EKSource) later if we extend CalendarInfo.
+       - `get-events --calendar <name> --start <iso> --end <iso>` → `[CalendarEvent]`. Use
+         `predicateForEvents` (this fixes recurrence expansion — smoke test showed all 8 occurrences).
+       - `search-events --term <text> [--calendar <name>] [--start/--end]` → `[CalendarEvent]`
+         (filter predicate results by title/notes containing term, case-insensitive).
+       - `create-event --calendar <name> --summary … --start … --end … [--all-day] [--location]
+         [--notes] [--url] [--recurrence <RRULE>]` → `{"uid": calendarItemIdentifier}`. Parse RRULE
+         into `EKRecurrenceRule` (or set via `event.recurrenceRules`).
+       - `update-event --uid <id> [same optional fields]` → `{"uid": …}`. Resolve event by uid
+         (calendarItemIdentifier), apply changes, `save(span:.futureEvents)` if recurring.
+       - `delete-event --uid <id> [--span this|future]` → `{"deleted":true}` or honest error if the
+         re-query still finds it. Default span: `.futureEvents` when recurring, else `.thisEvent`.
+     - **Map `CalendarEvent` fields** (src/calendar-executor.ts:16): `uid`=calendarItemIdentifier,
+       `summary`=title, `description`=notes, `startDate`/`endDate` as ISO 8601, `allDay`=isAllDay,
+       `location`, `status` (map EKEventStatus → "confirmed"/"tentative"/"cancelled"/"none"),
+       `recurrence` (serialize first EKRecurrenceRule back to an RRULE string — or omit v1 and
+       leave recurrence read as best-effort), `calendar`=calendar.title.
+     - **Argument parsing:** keep it dumb — `--flag value` pairs into a `[String:String]` dict; no
+       arg-parsing lib. ISO date parsing via `ISO8601DateFormatter` (the existing TS sends ISO; see
+       `isoToAppleScriptDate` for the current format — but the CLI takes raw ISO, no AppleScript date).
+     - **Build/sign:** generalize `smoke.sh` into a build step that compiles `main.swift` to
+       `src/eventkit-cli/build/eventkit-cli`, embeds `Info.plist` via linker `-sectcreate`, and
+       `codesign --force --sign -` re-signs it. The Node side spawns this binary by absolute path.
+       Decide where the binary lives at runtime (ship-built in repo? build on `npm run build`? a
+       `postbuild` step?) — simplest: commit a `build-eventkit.sh`, run it in `npm run build`, and
+       have CalendarExecutor resolve the binary path relative to `__dirname`.
+     - **Verify (needs John at Terminal):** before the Node swap, exercise each subcommand directly:
+       `bash src/eventkit-cli/build-eventkit.sh && build/eventkit-cli list-calendars | jq` etc.,
+       round-trip a create→get→update→delete on a throwaway `[EK-TEST]` event in *Personal*.
   3. Swap CalendarExecutor's AppleScript paths for `execAsync` calls to the CLI. Keep the
      `CalendarExecutor` class, `CalendarEvent`/`CalendarInfo` types, and `index.ts` handlers identical
-     — only the implementation changes. Add unit tests for any new pure TS parse/serialize helpers.
+     — only the implementation changes. **Extract any new pure TS** (building the arg list, parsing
+     the CLI's JSON into CalendarEvent) into testable helpers (`applescript-util.ts` or a new
+     `eventkit-util.ts`) with regression tests BEFORE wiring. Then restart Desktop + re-run the live
+     Calendar matrix (the recurring-delete row should finally pass).
   4. Reference impls: `PsychQuant/che-ical-mcp` (mature), `EgorKurito/apple-calendar-mcp` (simple).
   5. **Keep Reminders on AppleScript — do NOT touch `applescript-executor.ts` for this.**
+
+  **TCC gotchas already solved (don't rediscover):** (a) AppleScript `uid` ==
+  `EKEvent.calendarItemIdentifier` — match on that, not external/eventIdentifier; (b) the binary
+  MUST embed `NSCalendarsFullAccessUsageDescription` (linker `-sectcreate __TEXT __info_plist`) AND
+  be re-signed with `codesign --force --sign -` to *bind* the plist, or TCC denies silently; (c) the
+  grant is attributed to the *responsible GUI app*, so it must be granted once from John's own
+  Terminal — from Claude's embedded shell EventKit access is denied synchronously with no dialog,
+  which means **every live EventKit verification step needs John at the machine.** When the Node
+  server (inside Claude Desktop) spawns the binary, the grant will be attributed to Claude Desktop —
+  **open question to verify early: does Claude Desktop already have / can it be granted Full Calendar
+  Access so the spawned binary works in production?** If not, the binary may need to run such that it
+  carries its own grant. Test this BEFORE finishing the Node swap.
 
 **TRACK 3 — Mail suite (net-new).** Read `docs/mail-dictionary.md` first (object model differs from
 Reminders AND Calendar). `src/mail-executor.ts` does not exist yet. Implement simplest→complex,
