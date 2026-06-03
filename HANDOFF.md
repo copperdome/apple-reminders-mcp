@@ -114,32 +114,35 @@ actually work, found a new critical bug, fixed everything fixable, and documente
 
 ---
 
-## First things to do after restart
+## Post-restart verification — ✅ DONE (test-harness session, against fixed dist)
 
-### 1. Verify the apostrophe fix (the important one)
-```
-create_reminder { name: "Mom's birthday test", listName: "Reminders" }
-Expect: success with an id (previously failed at shell layer)
-Then: search_reminders { searchTerm: "Mom's", listName: "Reminders" } → finds it
-Then: delete_reminder { reminderId: <id> }
-```
+Claude Desktop was restarted and all reachable checks were run live against the new code.
+Confirmed the server is on the new build: `create_reminder` schema loaded with no
+`recurrenceRule`, and reminder output has no `recurrence` field.
 
-### 2. Verify list_calendars ids
-```
-list_calendars
-Expect: id fields populated (id-of-cal fallback). If still empty, leave as-is — cosmetic.
-```
+### 1. Apostrophe fix (the important one) — ✅ PASS
+- `create_reminder { name: "Mom's birthday test", listName: "Reminders" }` → created with id
+  `…465A9CD0FD29` (this FAILED at the shell layer on the old code).
+- `search_reminders { searchTerm: "Mom's", listName: "Reminders" }` → found it (apostrophe in
+  the search term also worked).
+- `delete_reminder { reminderId: … }` → deleted. Clean round-trip.
 
-### 3. Verify honest recurring-delete error
-```
-delete_event { uid: "7ADB72E8-D4BE-4538-99F4-09A0127D4FC8", calendarName: "Personal" }
-Expect: an ERROR saying the event still exists / delete in UI (NOT a false success)
-```
+### 2. list_calendars ids — ⚠️ still empty (now VERIFIED no-op, was "unverified")
+`list_calendars` runs cleanly but **every id is `""`** even with the `id of cal` fallback —
+so neither `calendarIdentifier of cal` nor `id of cal` yields a value on this account's
+calendars. Cosmetic (all targeting is by name). **Follow-up option:** the `id of cal`
+fallback block in `getCalendars` is now confirmed dead code — consider removing it.
 
-### 4. Clean up the lingering recurring test event
+### 3. Honest recurring-delete error — ✅ PASS
+`delete_event { uid: "7ADB72E8-…", calendarName: "Personal" }` returned the honest error
+("Delete reported success but event … still exists … Delete the series in the Calendar app
+UI instead") — no more silent-success lie. (Verified the uid first via `search_events` =
+"[MCP-TEST] Full options event (updated)", a throwaway test event.)
+
+### 4. Clean up the lingering recurring test event — ⬜ MANUAL (still pending)
 `7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` ("[MCP-TEST] Full options event (updated)") is a
 weekly recurring event still in **Personal**. It cannot be removed via the MCP (CalDAV
-limitation). Delete it in the Calendar app UI.
+limitation — confirmed again above). **John is deleting it in the Calendar app UI manually.**
 
 ---
 
