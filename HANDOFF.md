@@ -10,7 +10,7 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 fully coded (only Claude-Desktop TCC check left).
+### Current state — clean, committed, pushed. TRACK 1 + TRACK 2 DONE (prod-verified). TRACK 3 (Mail) is next.
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
   Latest commit on `main`: **`856137a`**. (Direct push to `main` is allowed — no PR flow here.)
@@ -44,11 +44,15 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
     tests (54 total green); `npm run build` now also builds/signs the Swift CLI (`build:ts` = tsc only).
     Verified end-to-end from Claude's shell as far as TCC allows: `import.meta.url` path resolution
     finds the binary, `execFile` spawns it, and the TCC-denied `{"error":…}` (exit 3) propagates
-    cleanly through `runCli`→`parseCliJson`→thrown Error. **REMAINING — the one thing left for TRACK 2:
-    the Claude-Desktop TCC check** (see step 3, and "⚠️ open question"): restart Claude Desktop and
-    call a Calendar tool live; if Desktop lacks Full Calendar Access the MCP calls fail with the same
-    silent-denial `{"error":…}`. Also CLAUDE.md's Calendar section was rewritten for EventKit
-    (CLAUDE.md is gitignored → local-only).
+    cleanly through `runCli`→`parseCliJson`→thrown Error. Also CLAUDE.md's Calendar section was
+    rewritten for EventKit (CLAUDE.md is gitignored → local-only).
+  - **TRACK 2 ✅ DONE — PRODUCTION-VERIFIED in Claude Desktop** (post-restart, live MCP tools).
+    Every Calendar tool green: list_calendars, get/search/create/update/delete_event, **and the
+    recurring-series delete on Google-backed calendars**. Resolved the big open question: **Claude
+    Desktop HOLDS Full Calendar Access, so the MCP-spawned eventkit-cli works in prod** (the TCC grant
+    attributes to Claude Desktop and was granted there — separate from the Terminal grant). Confirmed
+    fixes: iCloud sync lockout on global queries gone, update/delete work without calendarName, ISO-8601
+    UTC dates + proper RRULE strings replace locale-dependent human-readable dates. **TRACK 2 closed.**
 - **Loose ends:** (1) the old `[MCP-TEST]` recurring event `7ADB72E8-…` in *Personal* — John may
   still need to delete it in the Calendar UI (or just delete it with the new EventKit smoke CLI:
   `bash src/eventkit-cli/smoke.sh delete 7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` from Terminal — it
@@ -138,24 +142,12 @@ Sequence:
        Terminal. Confirm Claude Desktop has (or can be granted) Full Calendar Access so the spawned
        binary works in production — test BEFORE finishing the step-3 Node swap, or the live MCP path
        will be denied silently the same way Claude's shell is.
-  3. **Swap CalendarExecutor → EventKit CLI. ✅ DONE 2026-06-03 (`856137a`).** `calendar-executor.ts`
-     `execFile`s the binary; pure helpers in `eventkit-util.ts` (arg-builders + `parseCliJson`) with
-     23 tests; `npm run build` builds+signs the CLI. Class/types/`index.ts` handlers unchanged.
-     **◀ YOU ARE HERE — the ONE remaining live check (CRITICAL, needs John): does Claude Desktop have
-     Full Calendar Access?** Steps:
-       (a) `npm run build` (compiles TS + builds/signs the binary).
-       (b) Restart Claude Desktop (MCP doesn't hot-reload).
-       (c) From Claude Desktop, call a Calendar MCP tool live — e.g. `list_calendars`, then a
-           `create_event`→`get_events`→`delete_event` round-trip on a `[EK-TEST]` event in *Personal*,
-           and the recurring-delete that AppleScript failed.
-       (d) **If it returns `{"error":"Full Calendar Access not granted…"}`** → the TCC grant attributes
-           to Claude Desktop and it doesn't have it. Grant via System Settings → Privacy & Security →
-           Calendars (add/enable Claude Desktop, Full Access), or trigger the prompt, then retry. If
-           Desktop can't be granted, the binary may need to run so it carries its own grant — but the
-           more likely outcome is a one-time approval works. **This is the last gate before TRACK 2 is
-           truly done in production.**
-     Note: when the binary's responsible app is Claude Desktop, the grant is separate from the one you
-     approved in Terminal during `verify.sh` — Terminal's grant does NOT carry over.
+  3. **Swap CalendarExecutor → EventKit CLI. ✅ DONE 2026-06-03 (`856137a`) + PROD-VERIFIED.**
+     `calendar-executor.ts` `execFile`s the binary; pure helpers in `eventkit-util.ts` (arg-builders +
+     `parseCliJson`) with 23 tests; `npm run build` builds+signs the CLI. Class/types/`index.ts`
+     handlers unchanged. Live-verified in Claude Desktop after restart — all Calendar tools green,
+     including recurring delete. Claude Desktop holds Full Calendar Access (grant is separate from the
+     Terminal grant approved during `verify.sh`). **TRACK 2 fully closed — nothing left here.**
   4. Reference impls: `PsychQuant/che-ical-mcp` (mature), `EgorKurito/apple-calendar-mcp` (simple).
   5. **Keep Reminders on AppleScript — do NOT touch `applescript-executor.ts` for this.**
 
@@ -171,8 +163,9 @@ Sequence:
   Access so the spawned binary works in production?** If not, the binary may need to run such that it
   carries its own grant. Test this BEFORE finishing the Node swap.
 
-**TRACK 3 — Mail suite (net-new).** Read `docs/mail-dictionary.md` first (object model differs from
-Reminders AND Calendar). `src/mail-executor.ts` does not exist yet. Implement simplest→complex,
+**TRACK 3 — Mail suite (net-new). ◀ YOU ARE HERE (TRACK 1 + 2 done).** Read `docs/mail-dictionary.md`
+first (object model differs from Reminders AND Calendar). `src/mail-executor.ts` does not exist yet.
+Implement simplest→complex,
 each tool committed independently: list_mailboxes, get_emails, get_email, search_emails, send_email,
 reply_to_email, move_email, mark_read/unread, trash_email. Put script-gen + parsing as pure exported
 functions (in `applescript-util.ts` or a new `mail-util.ts`) with regression tests BEFORE wiring into
