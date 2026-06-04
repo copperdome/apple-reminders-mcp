@@ -209,7 +209,8 @@ class AppleMCPServer {
                 mailbox:    { type: 'string', description: 'Mailbox name. Well-known names (Inbox, Sent, Drafts, Junk, Trash, Outbox) map to the unified mailbox spanning accounts. Omit for Inbox.' },
                 account:    { type: 'string', description: 'Account name — scopes the mailbox to one account (optional).' },
                 limit:      {                 description: 'Max messages to return (optional, default 25), in Mail\'s default order (typically newest first).' },
-                unreadOnly: {                 description: 'Only return unread messages (optional).' },
+                unreadOnly: {                 description: 'Only return unread messages (optional). Scans recent messages (see daysBack) and filters — older unread beyond the window are not surfaced.' },
+                daysBack:   {                 description: 'With unreadOnly, only scan messages received in the last N days (optional, default 30). Widen to look further back; larger = slower.' },
               },
             },
           },
@@ -232,10 +233,11 @@ class AppleMCPServer {
             inputSchema: {
               type: 'object',
               properties: {
-                searchTerm: { type: 'string', description: 'Text to match in subject or sender' },
+                searchTerm: { type: 'string', description: 'Text to match in subject or sender (case-insensitive)' },
                 mailbox:    { type: 'string', description: 'Mailbox to search (optional, default Inbox)' },
                 account:    { type: 'string', description: 'Account to scope the mailbox to (optional)' },
                 limit:      {                 description: 'Max results (optional, default 25)' },
+                daysBack:   {                 description: 'Only search messages received in the last N days (optional, default 30). Search covers the most recent ~200 messages in this window; widen to look further back (slower).' },
               },
               required: ['searchTerm'],
             },
@@ -466,6 +468,7 @@ class AppleMCPServer {
               account:    args.account as string | undefined,
               limit:      args.limit !== undefined ? Number(args.limit) : undefined,
               unreadOnly: args.unreadOnly !== undefined ? (args.unreadOnly === true || args.unreadOnly === 'true') : undefined,
+              daysBack:   args.daysBack !== undefined ? Number(args.daysBack) : undefined,
             });
             return { content: [{ type: 'text', text: JSON.stringify(emails, null, 2) }] };
           }
@@ -483,9 +486,10 @@ class AppleMCPServer {
             const emails = await this.mail.searchEmails(
               args.searchTerm as string,
               {
-                mailbox: args.mailbox as string | undefined,
-                account: args.account as string | undefined,
-                limit:   args.limit !== undefined ? Number(args.limit) : undefined,
+                mailbox:  args.mailbox as string | undefined,
+                account:  args.account as string | undefined,
+                limit:    args.limit !== undefined ? Number(args.limit) : undefined,
+                daysBack: args.daysBack !== undefined ? Number(args.daysBack) : undefined,
               },
             );
             return { content: [{ type: 'text', text: JSON.stringify(emails, null, 2) }] };

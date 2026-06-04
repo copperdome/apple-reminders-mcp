@@ -110,6 +110,40 @@ export function buildRecipientLines(kind: 'to' | 'cc' | 'bcc', addresses: string
 }
 
 /**
+ * Build the `whose date received >= (current date - N * days)` clause that bounds a
+ * message query to the last `daysBack` days — the key defense against Mail's IMAP
+ * lockout, which a full-folder enumeration (or `count of every message`) triggers by
+ * forcing bulk header prefetch. Returns "" when daysBack is falsy / non-positive (no
+ * floor). `>=` is used rather than `≥` to avoid any heredoc encoding ambiguity.
+ */
+export function dateFloorClause(daysBack?: number): string {
+  if (!daysBack || daysBack <= 0 || !Number.isFinite(daysBack)) return '';
+  return ` whose date received >= ((current date) - ${Math.floor(daysBack)} * days)`;
+}
+
+/**
+ * Apply the TypeScript-side filters to already-fetched summaries. Filtering client-side
+ * (instead of via an AppleScript `whose` clause) is deliberate: `whose read status is
+ * false` / `whose subject contains …` force Mail to evaluate the predicate across the
+ * ENTIRE folder, which is exactly what triggered the multi-minute IMAP lockout in
+ * testing. Once a bounded, date-scoped batch of summaries is in hand, these are cheap
+ * string ops — and they let search keep matching BOTH subject and sender (the
+ * `or sender contains` whose-clause was the most expensive part to drop).
+ */
+export function filterMessages(
+  messages: MailMessage[],
+  opts: { unreadOnly?: boolean; term?: string } = {},
+): MailMessage[] {
+  let out = messages;
+  if (opts.unreadOnly) out = out.filter(m => !m.read);
+  if (opts.term) {
+    const t = opts.term.toLowerCase();
+    out = out.filter(m => m.subject.toLowerCase().includes(t) || m.sender.toLowerCase().includes(t));
+  }
+  return out;
+}
+
+/**
  * Parse the §REC§-record / §§§-field mailbox listing emitted by the list-mailboxes
  * script. One mailbox per record: account §§§ name §§§ unreadCount.
  */

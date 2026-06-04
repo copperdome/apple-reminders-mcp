@@ -14,6 +14,8 @@ import { promisify } from 'util';
 import {
   escAS,
   mailboxASExpr,
+  dateFloorClause,
+  filterMessages,
   parseMailboxes,
   parseMessages,
   parseMessageDetail,
@@ -46,23 +48,68 @@ const MSG_CONTEXT_PREAMBLE = `
 
 export type { Mailbox, MailMessage };
 
+// Default timeout for header-level ops (28s, same as Reminders/Calendar). get_email
+// fetches the message BODY, which downloads on access for IMAP and is inherently slower,
+// so it runs with a longer budget.
+const DEFAULT_TIMEOUT_MS = 28000;
+const BODY_TIMEOUT_MS = 55000;
+
+// Scan caps for the filtered read paths. We never enumerate the whole folder; instead we
+// walk messages by index up to a cap (within the date floor) and filter in TypeScript.
+// These bound the worst-case Apple-Event count so a busy mailbox can't relock Mail.
+const UNREAD_SCAN_CAP = 100;
+const SEARCH_SCAN_CAP = 200;
+const DEFAULT_DAYS_BACK = 30;
+
 export class MailExecutor {
-  private async executeScript(script: string): Promise<string> {
+  private async executeScript(script: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<string> {
     try {
       // Single-quoted heredoc — identical rationale to AppleScriptExecutor (Reminders):
       // the shell passes the script through literally, so only AppleScript-level escaping
       // (via escAS) of " and \ is needed, and apostrophes are safe.
       const { stdout } = await execAsync(
         `osascript <<'APPLESCRIPT'\n${script}\nAPPLESCRIPT`,
-        { timeout: 28000, maxBuffer: 10 * 1024 * 1024 }
+        { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }
       );
       return stdout.trim();
     } catch (error: any) {
       if (error.killed) {
-        throw new Error('AppleScript timed out (28s) — Mail may be syncing or downloading. Try again in a moment.');
+        throw new Error(
+          `AppleScript timed out (${Math.round(timeoutMs / 1000)}s) — Mail may be syncing or ` +
+          `prefetching IMAP headers. Narrow the query (smaller daysBack/limit, a specific mailbox) ` +
+          `and retry once sync settles.`
+        );
       }
       throw new Error(`AppleScript execution failed: ${error}`);
     }
+  }
+
+  // Build a script that walks up to `scanCap` messages of `mbxExpr` BY INDEX (no
+  // `count of`, no per-property `whose` — both force full-folder enumeration and the
+  // IMAP lockout) within an optional date floor, emitting one §§§ summary per message.
+  // The try/exit-repeat termination means we stop at the end of the (bounded) set without
+  // ever asking Mail how many messages exist.
+  private buildScanScript(mbxExpr: string, daysBack: number | undefined, scanCap: number): string {
+    const floor = dateFloorClause(daysBack);
+    return `
+      tell application "Mail"
+        set theMailbox to ${mbxExpr}
+        set theMessages to (messages of theMailbox${floor})
+        set out to ""
+        repeat with i from 1 to ${scanCap}
+          try
+            set msg to item i of theMessages
+          on error
+            exit repeat
+          end try
+          ${MSG_CONTEXT_PREAMBLE}
+          set rec to ${SUMMARY_REC_EXPR}
+          if out is not "" then set out to out & "§REC§"
+          set out to out & rec
+        end repeat
+        return out
+      end tell
+    `;
   }
 
   /**
@@ -91,37 +138,34 @@ export class MailExecutor {
   }
 
   /**
-   * Get message summaries from a mailbox (defaults to the unified Inbox). `limit` caps the
-   * number returned in Mail's default order (typically most-recent-first). `unreadOnly`
-   * filters to unread messages. No body is fetched here — use getEmail for full content.
+   * Get message summaries from a mailbox (defaults to the unified Inbox). No body is
+   * fetched here — use getEmail for full content.
+   *
+   * Two paths, both engineered to avoid Mail's IMAP lockout (full-folder enumeration):
+   *  - default: walk the first `limit` messages BY INDEX only — minimal footprint, no
+   *    date floor needed (the newest messages are always within reach by index).
+   *  - `unreadOnly`: bound the scan with a date floor (`daysBack`, default 30) + a scan
+   *    cap, then filter unread in TypeScript. Returns up to `limit` unread messages found
+   *    within that recent window — older unread beyond the window/cap are not surfaced
+   *    (widen `daysBack` to look back further).
    */
   async getEmails(opts: {
     mailbox?: string;
     account?: string;
     limit?: number;
     unreadOnly?: boolean;
+    daysBack?: number;
   } = {}): Promise<MailMessage[]> {
     const mbx = mailboxASExpr(opts.account, opts.mailbox);
     const limit = Number.isFinite(opts.limit) && opts.limit! > 0 ? Math.floor(opts.limit!) : 25;
-    const filter = opts.unreadOnly ? ' whose read status is false' : '';
-    const script = `
-      tell application "Mail"
-        set theMailbox to ${mbx}
-        set theMessages to (messages of theMailbox${filter})
-        set total to count of theMessages
-        set lim to ${limit}
-        if lim > total then set lim to total
-        set out to ""
-        repeat with i from 1 to lim
-          set msg to item i of theMessages
-          ${MSG_CONTEXT_PREAMBLE}
-          set rec to ${SUMMARY_REC_EXPR}
-          if out is not "" then set out to out & "§REC§"
-          set out to out & rec
-        end repeat
-        return out
-      end tell
-    `;
+    if (opts.unreadOnly) {
+      const daysBack = Number.isFinite(opts.daysBack) ? opts.daysBack! : DEFAULT_DAYS_BACK;
+      const script = this.buildScanScript(mbx, daysBack, UNREAD_SCAN_CAP);
+      const all = parseMessages(await this.executeScript(script));
+      return filterMessages(all, { unreadOnly: true }).slice(0, limit);
+    }
+    // Unfiltered: no date floor, scan exactly `limit` by index.
+    const script = this.buildScanScript(mbx, opts.daysBack, limit);
     return parseMessages(await this.executeScript(script));
   }
 
@@ -157,7 +201,8 @@ export class MailExecutor {
         return summaryRec & "§§§" & toStr & "§§§" & ccStr & "§§§" & ((message id of msg) as string) & "§§§" & ((content of msg) as string)
       end tell
     `;
-    const result = await this.executeScript(script);
+    // Body downloads on access for IMAP — use the longer timeout.
+    const result = await this.executeScript(script, BODY_TIMEOUT_MS);
     if (result === 'NOTFOUND') {
       throw new Error(`Message id ${id} not found in mailbox ${mailbox ?? 'Inbox'}${account ? ` (account ${account})` : ''}.`);
     }
@@ -168,36 +213,27 @@ export class MailExecutor {
 
   /**
    * Search a mailbox (default Inbox) for messages whose subject OR sender contains the
-   * term (case-insensitive, per Mail's `contains`). Does NOT scan message bodies — that
-   * would force a download of every message and time out. `limit` caps the results.
+   * term (case-insensitive). The matching is done in TypeScript over a bounded, date-
+   * scoped batch of summaries — NOT via an AppleScript `whose … contains` clause, which
+   * forces Mail to scan the whole folder and was a confirmed cause of the IMAP lockout.
+   *
+   * Consequence: search covers the most recent ~${SEARCH_SCAN_CAP} messages within
+   * `daysBack` days (default 30). It does NOT scan message bodies and will not find older
+   * matches outside that window — widen `daysBack` (and accept a slower call) to look
+   * further back. `limit` caps the returned matches.
    */
   async searchEmails(searchTerm: string, opts: {
     mailbox?: string;
     account?: string;
     limit?: number;
+    daysBack?: number;
   } = {}): Promise<MailMessage[]> {
     const mbx = mailboxASExpr(opts.account, opts.mailbox);
-    const term = escAS(searchTerm);
     const limit = Number.isFinite(opts.limit) && opts.limit! > 0 ? Math.floor(opts.limit!) : 25;
-    const script = `
-      tell application "Mail"
-        set theMailbox to ${mbx}
-        set theMessages to (messages of theMailbox whose subject contains "${term}" or sender contains "${term}")
-        set total to count of theMessages
-        set lim to ${limit}
-        if lim > total then set lim to total
-        set out to ""
-        repeat with i from 1 to lim
-          set msg to item i of theMessages
-          ${MSG_CONTEXT_PREAMBLE}
-          set rec to ${SUMMARY_REC_EXPR}
-          if out is not "" then set out to out & "§REC§"
-          set out to out & rec
-        end repeat
-        return out
-      end tell
-    `;
-    return parseMessages(await this.executeScript(script));
+    const daysBack = Number.isFinite(opts.daysBack) ? opts.daysBack! : DEFAULT_DAYS_BACK;
+    const script = this.buildScanScript(mbx, daysBack, SEARCH_SCAN_CAP);
+    const all = parseMessages(await this.executeScript(script));
+    return filterMessages(all, { term: searchTerm }).slice(0, limit);
   }
 
   // ── Mutating tools ─────────────────────────────────────────────────────────

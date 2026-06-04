@@ -13,10 +13,13 @@ import {
   parseMessageDetail,
   normalizeAddresses,
   buildRecipientLines,
+  dateFloorClause,
+  filterMessages,
   REC,
   FIELD,
   ADDR_SEP,
 } from '../src/mail-util';
+import type { MailMessage } from '../src/mail-util';
 
 describe('mailboxASExpr', () => {
   it('defaults to the unified inbox when nothing is given', () => {
@@ -195,5 +198,58 @@ describe('buildRecipientLines', () => {
   it('joins multiple addresses on separate lines', () => {
     const out = buildRecipientLines('to', ['a@x.test', 'b@x.test']);
     expect(out.split('\n')).toHaveLength(2);
+  });
+});
+
+describe('dateFloorClause', () => {
+  it('returns "" for falsy / non-positive / non-finite daysBack (no floor)', () => {
+    expect(dateFloorClause()).toBe('');
+    expect(dateFloorClause(0)).toBe('');
+    expect(dateFloorClause(-5)).toBe('');
+    expect(dateFloorClause(Infinity)).toBe('');
+  });
+
+  it('builds a date-received floor clause and floors the day count', () => {
+    expect(dateFloorClause(30)).toBe(' whose date received >= ((current date) - 30 * days)');
+    expect(dateFloorClause(7.9)).toBe(' whose date received >= ((current date) - 7 * days)');
+  });
+
+  it('uses >= (not ≥) to stay heredoc-encoding-safe', () => {
+    expect(dateFloorClause(1)).not.toContain('≥');
+  });
+});
+
+describe('filterMessages', () => {
+  const mk = (over: Partial<MailMessage>): MailMessage => ({
+    id: '1', subject: 's', sender: 'a@x.test', read: false, flagged: false,
+    mailbox: 'Inbox', account: 'Work', ...over,
+  });
+
+  it('is a no-op with no options', () => {
+    const msgs = [mk({ id: '1' }), mk({ id: '2', read: true })];
+    expect(filterMessages(msgs)).toBe(msgs);
+  });
+
+  it('keeps only unread when unreadOnly is set', () => {
+    const msgs = [mk({ id: '1', read: false }), mk({ id: '2', read: true })];
+    expect(filterMessages(msgs, { unreadOnly: true }).map(m => m.id)).toEqual(['1']);
+  });
+
+  it('matches the term in subject OR sender, case-insensitively', () => {
+    const msgs = [
+      mk({ id: '1', subject: 'Invoice #42', sender: 'billing@x.test' }),
+      mk({ id: '2', subject: 'Lunch?', sender: 'INVOICE-bot@x.test' }),
+      mk({ id: '3', subject: 'Hello', sender: 'ann@x.test' }),
+    ];
+    expect(filterMessages(msgs, { term: 'invoice' }).map(m => m.id)).toEqual(['1', '2']);
+  });
+
+  it('applies unreadOnly AND term together', () => {
+    const msgs = [
+      mk({ id: '1', subject: 'Invoice', read: false }),
+      mk({ id: '2', subject: 'Invoice', read: true }),
+      mk({ id: '3', subject: 'Other', read: false }),
+    ];
+    expect(filterMessages(msgs, { unreadOnly: true, term: 'invoice' }).map(m => m.id)).toEqual(['1']);
   });
 });

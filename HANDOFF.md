@@ -175,12 +175,35 @@ like Reminders; wired into `index.ts` (import, construct, schemas, cases) like `
 Key design (see CLAUDE.md Mail section): messages addressed by **mailbox + integer id** (no app-level
 id lookup); `search_emails` matches subject/sender only (no body scan → no IMAP-download timeout);
 recipient lists join on U+0001; `send_email`/`reply_to_email` **send immediately** (no draft).
-**◀ NEXT: live verification.** Restart Claude Desktop, accept the Mail Automation consent dialog, then
-run the matrix: list_mailboxes → get_emails (Inbox) → get_email by id → search_emails → mark/move/trash
-on a throwaway message → send_email + reply_to_email to a throwaway address. None of this can run from
-Claude's shell (needs the GUI automation grant + a restart). Watch for: message-ordering in get_emails
-(is item 1 newest?), `account of mailbox` populating correctly on the unified Inbox, and whether `reply`
-+ immediate `send` works headless (visible:false).
+**Live test #1 (2026-06-03) — partial PASS then IMAP lockout. Fixes applied; RE-TEST NEEDED.**
+Results: `list_mailboxes` ✅ (4 accounts, 47 mailboxes). `get_emails` (Inbox, limit 5) ✅ correct shape.
+Then `get_emails unreadOnly`, `search_emails`, `get_email`, `mark_email` all ❌ TIMEOUT — Mail locked ALL
+AppleScript for *minutes* (far worse than Reminders' 30–60s iCloud lockout). send/move/trash/reply not
+reached. **Root cause: full-folder enumeration triggering bulk IMAP header prefetch.** Specifically
+`count of theMessages` (forces materializing every message) and the `whose read status is false` /
+`whose subject contains … or sender contains …` predicates (evaluated across the whole folder).
+
+**Fixes (this commit) — NOT yet live-verified, re-test required:**
+  1. **No more `count of` on the folder.** All list scans walk messages BY INDEX with a try/exit-repeat
+     terminator (`buildScanScript` in mail-executor.ts) — we never ask Mail how many messages exist.
+  2. **`unreadOnly` + `search_emails` no longer use a `whose` predicate.** They fetch a bounded,
+     **date-scoped** batch of summaries (default `daysBack`=30, via `dateFloorClause`) capped at a scan
+     limit (unread 100 / search 200), then filter in TypeScript (`filterMessages`). Search still matches
+     subject OR sender (now cheap TS string ops) and no longer scans bodies. New `daysBack` param on both
+     tools widens the window when needed.
+  3. **get_email body fetch timeout raised to 55s** (`BODY_TIMEOUT_MS`); list/mutate ops stay at 28s.
+  Pure helpers `dateFloorClause` + `filterMessages` added with tests (87 total green).
+  **Known limitation (documented in tool descriptions):** unreadOnly/search only see recent messages
+  within `daysBack` (and the scan cap) — older matches need a larger `daysBack`.
+
+**◀ NEXT: re-run live test #1.** Restart Claude Desktop (new dist), then, giving Mail ~60s to settle
+between calls: `list_mailboxes` → `get_emails` (Inbox, limit 5) → `get_emails {unreadOnly:true}` →
+`search_emails {searchTerm}` → `get_email {messageId}` → `mark_email` → `move_email`/`trash_email` on a
+throwaway → `send_email` + `reply_to_email` to a throwaway address. Watch for: (a) does the bounded scan
+actually avoid the lockout, (b) get_emails ordering (is `item 1` the newest?), (c) `account of mailbox`
+on the unified Inbox, (d) whether the **id-based lookup** in get_email/mark/move/trash/reply
+(`messages … whose id is N`, still a folder scan but header-only — no body prefetch) is fast enough on a
+large folder, or whether it ALSO needs a date floor, (e) headless `reply`+`send` (visible:false).
 
 ### Environment reality (don't fight these)
 - **The MCP runs inside Claude Desktop; `dist/` changes need a Desktop restart to go live** (no
