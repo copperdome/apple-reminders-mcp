@@ -28,7 +28,8 @@
     "node": ">=16.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && bash src/eventkit-cli/build-eventkit.sh",
+    "build:ts": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "vitest run",

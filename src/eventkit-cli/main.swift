@@ -467,10 +467,13 @@ func cmdUpdateEvent(_ a: [String: String]) {
     if let allDay = a["all-day"] { ev.isAllDay = (allDay == "true") }
     if let urlStr = a["url"] { ev.url = URL(string: urlStr) }
     if let rruleStr = a["recurrence"] {
-        guard let rule = parseRRULE(rruleStr) else { fail("update-event: invalid --recurrence RRULE: \(rruleStr)") }
-        // Replace any existing rules with the new one.
+        // Replace any existing rules. An empty value clears recurrence (the MCP
+        // update_event schema documents "empty string to clear").
         ev.recurrenceRules?.forEach { ev.removeRecurrenceRule($0) }
-        ev.addRecurrenceRule(rule)
+        if !rruleStr.isEmpty {
+            guard let rule = parseRRULE(rruleStr) else { fail("update-event: invalid --recurrence RRULE: \(rruleStr)") }
+            ev.addRecurrenceRule(rule)
+        }
     }
 
     let span: EKSpan = spanArg(a, recurring: ev.hasRecurrenceRules)
