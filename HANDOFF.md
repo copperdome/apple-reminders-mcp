@@ -230,6 +230,17 @@ the live `apple-apps` MCP (send-to-self per John's OK). Results:
 path as the verified `get_emails`/`search_emails`, so they're covered transitively, but a dedicated
 unreadOnly run on a big folder (Receipts: 1518 unread) would be the last belt-and-suspenders check.
 
+**⚠️ Post-verification code change — re-verify owed (commit `bb0e9f3`, NOT in live test #2).** After the
+session-#4 pass, the date floor was reworked from a `whose date received >= X` clause to a **per-message
+early-exit** inside the index loop (`if (date received of msg) < dateFloor then exit repeat`; see
+`dateFloorClause`/`buildScanScript`). This changes the live AppleScript that `unreadOnly` + `search_emails`
+run, so those two paths now differ from what test #2 exercised. Tests are green (87) but it's unverified
+live. **Two things to confirm after a Desktop restart:** (a) `search_emails` + `get_emails {unreadOnly}`
+still return correctly and stay lockout-free; (b) the early-exit's **newest-first ordering assumption**
+holds for non-Inbox mailboxes (e.g. Receipts) — if a folder's index order isn't strictly newest→oldest,
+the early-exit could stop short and miss messages. If ordering proves unreliable, drop the early-exit and
+just scan to the cap (filtering by dateFloor without exiting). This is the single remaining Mail to-do.
+
 ### Environment reality (don't fight these)
 - **The MCP runs inside Claude Desktop; `dist/` changes need a Desktop restart to go live** (no
   hot-reload). The live `apple-apps` MCP tools (`mcp__apple-apps__*`) are only reachable from a
