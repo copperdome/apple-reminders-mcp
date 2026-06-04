@@ -110,15 +110,20 @@ export function buildRecipientLines(kind: 'to' | 'cc' | 'bcc', addresses: string
 }
 
 /**
- * Build the `whose date received >= (current date - N * days)` clause that bounds a
- * message query to the last `daysBack` days — the key defense against Mail's IMAP
- * lockout, which a full-folder enumeration (or `count of every message`) triggers by
- * forcing bulk header prefetch. Returns "" when daysBack is falsy / non-positive (no
- * floor). `>=` is used rather than `≥` to avoid any heredoc encoding ambiguity.
+ * Build an AppleScript snippet that declares a `dateFloor` variable, used by
+ * buildScanScript to exit the index loop early once we pass the date window.
+ *
+ * IMPORTANT: this must NOT produce a `whose` predicate on `messages of theMailbox`.
+ * `messages of inbox whose date received >= X` forces Mail to evaluate `date received`
+ * for EVERY message (IMAP header prefetch for uncached messages), which is the exact
+ * bulk-fetch lockout we are trying to avoid. Instead, `dateFloor` is checked per-message
+ * inside the index loop — one header fetch per message, early-exit when too old.
+ *
+ * Returns "" (no variable declared) when daysBack is falsy / non-positive (no floor).
  */
 export function dateFloorClause(daysBack?: number): string {
   if (!daysBack || daysBack <= 0 || !Number.isFinite(daysBack)) return '';
-  return ` whose date received >= ((current date) - ${Math.floor(daysBack)} * days)`;
+  return `set dateFloor to (current date) - ${Math.floor(daysBack)} * days`;
 }
 
 /**

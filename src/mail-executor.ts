@@ -90,11 +90,18 @@ export class MailExecutor {
   // The try/exit-repeat termination means we stop at the end of the (bounded) set without
   // ever asking Mail how many messages exist.
   private buildScanScript(mbxExpr: string, daysBack: number | undefined, scanCap: number): string {
-    const floor = dateFloorClause(daysBack);
+    const floorDecl = dateFloorClause(daysBack);
+    // Per-message date check — only present when daysBack is set.
+    // Runs INSIDE the loop (after fetching the message) so we never apply a `whose`
+    // predicate to the full collection (that forces IMAP header prefetch for all messages).
+    const floorCheck = floorDecl
+      ? `if (date received of msg) < dateFloor then exit repeat`
+      : '';
     return `
       tell application "Mail"
         set theMailbox to ${mbxExpr}
-        set theMessages to (messages of theMailbox${floor})
+        set theMessages to (messages of theMailbox)
+        ${floorDecl}
         set out to ""
         repeat with i from 1 to ${scanCap}
           try
@@ -102,6 +109,7 @@ export class MailExecutor {
           on error
             exit repeat
           end try
+          ${floorCheck}
           ${MSG_CONTEXT_PREAMBLE}
           set rec to ${SUMMARY_REC_EXPR}
           if out is not "" then set out to out & "§REC§"

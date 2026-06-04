@@ -209,13 +209,19 @@ describe('dateFloorClause', () => {
     expect(dateFloorClause(Infinity)).toBe('');
   });
 
-  it('builds a date-received floor clause and floors the day count', () => {
-    expect(dateFloorClause(30)).toBe(' whose date received >= ((current date) - 30 * days)');
-    expect(dateFloorClause(7.9)).toBe(' whose date received >= ((current date) - 7 * days)');
+  it('builds a dateFloor variable declaration (NOT a whose clause on the collection)', () => {
+    // Must be a variable declaration used inside the loop — NOT a `whose` predicate.
+    // A `whose date received >= X` on `messages of theMailbox` forces Mail to fetch
+    // headers for every message (IMAP lockout). The per-message check in the loop is safe.
+    expect(dateFloorClause(30)).toBe('set dateFloor to (current date) - 30 * days');
+    expect(dateFloorClause(7.9)).toBe('set dateFloor to (current date) - 7 * days');
+    expect(dateFloorClause(30)).not.toContain('whose');
+    expect(dateFloorClause(30)).not.toContain('messages of');
   });
 
-  it('uses >= (not ≥) to stay heredoc-encoding-safe', () => {
+  it('uses no unicode operators to stay heredoc-encoding-safe', () => {
     expect(dateFloorClause(1)).not.toContain('≥');
+    expect(dateFloorClause(1)).not.toContain('>=');
   });
 });
 
