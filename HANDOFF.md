@@ -10,10 +10,10 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 CLI code-complete (live-verify pending).
+### Current state — clean, committed, pushed. TRACK 1 done; TRACK 2 fully coded (only Claude-Desktop TCC check left).
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
-  Latest commit on `main`: **`bdf4815`**. (Direct push to `main` is allowed — no PR flow here.)
+  Latest commit on `main`: **`856137a`**. (Direct push to `main` is allowed — no PR flow here.)
 - `npm test` → **31 green** (vitest; tests in `test/`, pure helpers in `src/applescript-util.ts`).
   `npm run build` → green. `dist/` is fresh. (Swift files in `src/eventkit-cli/` are outside `tsc`.)
 - **2026-06-03 session #2 progress:**
@@ -38,6 +38,17 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
     delete (future span) → re-query returned `[]`.** That last line is the row AppleScript could
     never pass — EventKit deletes the Google recurring series and the honest re-query confirms gone.
     Dates round-trip as ISO-8601 UTC. **Step 2 complete.**
+  - TRACK 2 step 3 (Node swap) ✅ **code-complete + integration-path verified** (`856137a`).
+    `calendar-executor.ts` now `execFile`s the binary instead of osascript; class/types/`index.ts`
+    handlers unchanged. New pure layer `eventkit-util.ts` (CLI arg-builders + `parseCliJson`) with 23
+    tests (54 total green); `npm run build` now also builds/signs the Swift CLI (`build:ts` = tsc only).
+    Verified end-to-end from Claude's shell as far as TCC allows: `import.meta.url` path resolution
+    finds the binary, `execFile` spawns it, and the TCC-denied `{"error":…}` (exit 3) propagates
+    cleanly through `runCli`→`parseCliJson`→thrown Error. **REMAINING — the one thing left for TRACK 2:
+    the Claude-Desktop TCC check** (see step 3, and "⚠️ open question"): restart Claude Desktop and
+    call a Calendar tool live; if Desktop lacks Full Calendar Access the MCP calls fail with the same
+    silent-denial `{"error":…}`. Also CLAUDE.md's Calendar section was rewritten for EventKit
+    (CLAUDE.md is gitignored → local-only).
 - **Loose ends:** (1) the old `[MCP-TEST]` recurring event `7ADB72E8-…` in *Personal* — John may
   still need to delete it in the Calendar UI (or just delete it with the new EventKit smoke CLI:
   `bash src/eventkit-cli/smoke.sh delete 7ADB72E8-D4BE-4538-99F4-09A0127D4FC8` from Terminal — it
@@ -127,16 +138,24 @@ Sequence:
        Terminal. Confirm Claude Desktop has (or can be granted) Full Calendar Access so the spawned
        binary works in production — test BEFORE finishing the step-3 Node swap, or the live MCP path
        will be denied silently the same way Claude's shell is.
-  3. **◀ YOU ARE HERE — swap CalendarExecutor's AppleScript paths for `execAsync` calls to the CLI.**
-     Keep the `CalendarExecutor` class, `CalendarEvent`/`CalendarInfo` types, and `index.ts` handlers
-     identical — only the implementation changes. **Extract any new pure TS** (building the arg list,
-     parsing the CLI's JSON into CalendarEvent) into testable helpers (`applescript-util.ts` or a new
-     `eventkit-util.ts`) with regression tests BEFORE wiring. Then restart Desktop + re-run the live
-     Calendar matrix (the recurring-delete row should finally pass).
-     **CRITICAL pre-swap test (the ⚠️ open question above):** before relying on this in production,
-     confirm Claude **Desktop** has Full Calendar Access — when its Node server spawns the binary the
-     TCC grant attributes to Claude Desktop, not Terminal. If Desktop lacks the grant the live MCP
-     calls will be denied silently (clean `{"error":…}` exit 3) exactly like Claude's embedded shell.
+  3. **Swap CalendarExecutor → EventKit CLI. ✅ DONE 2026-06-03 (`856137a`).** `calendar-executor.ts`
+     `execFile`s the binary; pure helpers in `eventkit-util.ts` (arg-builders + `parseCliJson`) with
+     23 tests; `npm run build` builds+signs the CLI. Class/types/`index.ts` handlers unchanged.
+     **◀ YOU ARE HERE — the ONE remaining live check (CRITICAL, needs John): does Claude Desktop have
+     Full Calendar Access?** Steps:
+       (a) `npm run build` (compiles TS + builds/signs the binary).
+       (b) Restart Claude Desktop (MCP doesn't hot-reload).
+       (c) From Claude Desktop, call a Calendar MCP tool live — e.g. `list_calendars`, then a
+           `create_event`→`get_events`→`delete_event` round-trip on a `[EK-TEST]` event in *Personal*,
+           and the recurring-delete that AppleScript failed.
+       (d) **If it returns `{"error":"Full Calendar Access not granted…"}`** → the TCC grant attributes
+           to Claude Desktop and it doesn't have it. Grant via System Settings → Privacy & Security →
+           Calendars (add/enable Claude Desktop, Full Access), or trigger the prompt, then retry. If
+           Desktop can't be granted, the binary may need to run so it carries its own grant — but the
+           more likely outcome is a one-time approval works. **This is the last gate before TRACK 2 is
+           truly done in production.**
+     Note: when the binary's responsible app is Claude Desktop, the grant is separate from the one you
+     approved in Terminal during `verify.sh` — Terminal's grant does NOT carry over.
   4. Reference impls: `PsychQuant/che-ical-mcp` (mature), `EgorKurito/apple-calendar-mcp` (simple).
   5. **Keep Reminders on AppleScript — do NOT touch `applescript-executor.ts` for this.**
 
