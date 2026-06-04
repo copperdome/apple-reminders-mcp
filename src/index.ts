@@ -8,11 +8,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { AppleScriptExecutor } from './applescript-executor.js';
 import { CalendarExecutor } from './calendar-executor.js';
+import { MailExecutor } from './mail-executor.js';
 
 class AppleMCPServer {
   private server: Server;
   private reminders: AppleScriptExecutor;
   private calendar: CalendarExecutor;
+  private mail: MailExecutor;
 
   constructor() {
     this.server = new Server(
@@ -21,6 +23,7 @@ class AppleMCPServer {
     );
     this.reminders = new AppleScriptExecutor();
     this.calendar  = new CalendarExecutor();
+    this.mail      = new MailExecutor();
     this.setupToolHandlers();
   }
 
@@ -190,6 +193,53 @@ class AppleMCPServer {
               required: ['searchTerm'],
             },
           },
+
+          // ── Mail ───────────────────────────────────────────────────
+          {
+            name: 'list_mailboxes',
+            description: 'List mailboxes across all Mail accounts (account, name, unread count). Top-level mailboxes per account.',
+            inputSchema: { type: 'object', properties: {} },
+          },
+          {
+            name: 'get_emails',
+            description: 'Get message summaries (id, subject, sender, dates, read/flagged status) from a mailbox. Defaults to the unified Inbox. No body is fetched — use get_email for full content. Returns the integer id needed to address a message in get_email.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                mailbox:    { type: 'string', description: 'Mailbox name. Well-known names (Inbox, Sent, Drafts, Junk, Trash, Outbox) map to the unified mailbox spanning accounts. Omit for Inbox.' },
+                account:    { type: 'string', description: 'Account name — scopes the mailbox to one account (optional).' },
+                limit:      {                 description: 'Max messages to return (optional, default 25), in Mail\'s default order (typically newest first).' },
+                unreadOnly: {                 description: 'Only return unread messages (optional).' },
+              },
+            },
+          },
+          {
+            name: 'get_email',
+            description: 'Fetch one message in full — recipients, RFC message-id, and body — by its integer id (from get_emails/search_emails), scoped to a mailbox (default Inbox).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                messageId: {                 description: 'The integer message id from get_emails/search_emails' },
+                mailbox:   { type: 'string', description: 'Mailbox the message is in (optional, default Inbox)' },
+                account:   { type: 'string', description: 'Account the mailbox belongs to (optional)' },
+              },
+              required: ['messageId'],
+            },
+          },
+          {
+            name: 'search_emails',
+            description: 'Search a mailbox (default Inbox) for messages whose subject OR sender contains the term (case-insensitive). Does NOT scan message bodies (that would force a full download). Returns summaries.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                searchTerm: { type: 'string', description: 'Text to match in subject or sender' },
+                mailbox:    { type: 'string', description: 'Mailbox to search (optional, default Inbox)' },
+                account:    { type: 'string', description: 'Account to scope the mailbox to (optional)' },
+                limit:      {                 description: 'Max results (optional, default 25)' },
+              },
+              required: ['searchTerm'],
+            },
+          },
         ],
       };
     });
@@ -330,6 +380,44 @@ class AppleMCPServer {
             return { content: [{ type: 'text', text: JSON.stringify(events, null, 2) }] };
           }
 
+          // ── Mail ───────────────────────────────────────────────────
+
+          case 'list_mailboxes': {
+            const mailboxes = await this.mail.getMailboxes();
+            return { content: [{ type: 'text', text: JSON.stringify(mailboxes, null, 2) }] };
+          }
+
+          case 'get_emails': {
+            const emails = await this.mail.getEmails({
+              mailbox:    args.mailbox as string | undefined,
+              account:    args.account as string | undefined,
+              limit:      args.limit !== undefined ? Number(args.limit) : undefined,
+              unreadOnly: args.unreadOnly !== undefined ? (args.unreadOnly === true || args.unreadOnly === 'true') : undefined,
+            });
+            return { content: [{ type: 'text', text: JSON.stringify(emails, null, 2) }] };
+          }
+
+          case 'get_email': {
+            const email = await this.mail.getEmail(
+              Number(args.messageId),
+              args.mailbox as string | undefined,
+              args.account as string | undefined,
+            );
+            return { content: [{ type: 'text', text: JSON.stringify(email, null, 2) }] };
+          }
+
+          case 'search_emails': {
+            const emails = await this.mail.searchEmails(
+              args.searchTerm as string,
+              {
+                mailbox: args.mailbox as string | undefined,
+                account: args.account as string | undefined,
+                limit:   args.limit !== undefined ? Number(args.limit) : undefined,
+              },
+            );
+            return { content: [{ type: 'text', text: JSON.stringify(emails, null, 2) }] };
+          }
+
           default:
             throw new Error(`Unknown tool: ${request.params.name}`);
         }
@@ -345,7 +433,7 @@ class AppleMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Apple MCP server running on stdio (Reminders + Calendar)');
+    console.error('Apple MCP server running on stdio (Reminders + Calendar + Mail)');
   }
 }
 
