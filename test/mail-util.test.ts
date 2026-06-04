@@ -11,6 +11,8 @@ import {
   parseMailboxes,
   parseMessages,
   parseMessageDetail,
+  normalizeAddresses,
+  buildRecipientLines,
   REC,
   FIELD,
   ADDR_SEP,
@@ -154,5 +156,44 @@ describe('parseMessageDetail', () => {
   it('preserves commas inside a single recipient (joined on U+0001, not comma)', () => {
     const rec = [summary(), ['"Doe, John" <j@x.test>'].join(ADDR_SEP), '', '<id>', 'b'].join(FIELD);
     expect(parseMessageDetail(rec)!.to).toEqual(['"Doe, John" <j@x.test>']);
+  });
+});
+
+describe('normalizeAddresses', () => {
+  it('returns [] for undefined/empty', () => {
+    expect(normalizeAddresses()).toEqual([]);
+    expect(normalizeAddresses('')).toEqual([]);
+    expect(normalizeAddresses('   ,  ')).toEqual([]);
+  });
+
+  it('splits a comma-separated string and trims', () => {
+    expect(normalizeAddresses('a@x.test, b@x.test ,c@x.test')).toEqual(['a@x.test', 'b@x.test', 'c@x.test']);
+  });
+
+  it('accepts an array and drops blanks', () => {
+    expect(normalizeAddresses(['a@x.test', '', '  b@x.test '])).toEqual(['a@x.test', 'b@x.test']);
+  });
+});
+
+describe('buildRecipientLines', () => {
+  it('returns "" for no addresses', () => {
+    expect(buildRecipientLines('to', [])).toBe('');
+  });
+
+  it('builds one make-new line per address with the right class/plural', () => {
+    expect(buildRecipientLines('to', ['a@x.test'])).toBe(
+      'make new to recipient at end of to recipients with properties {address:"a@x.test"}',
+    );
+    expect(buildRecipientLines('cc', ['c@x.test'])).toContain('cc recipient at end of cc recipients');
+    expect(buildRecipientLines('bcc', ['b@x.test'])).toContain('bcc recipient at end of bcc recipients');
+  });
+
+  it('escapes double quotes in addresses', () => {
+    expect(buildRecipientLines('to', ['"Doe, John" <j@x.test>'])).toContain('{address:"\\"Doe, John\\" <j@x.test>"}');
+  });
+
+  it('joins multiple addresses on separate lines', () => {
+    const out = buildRecipientLines('to', ['a@x.test', 'b@x.test']);
+    expect(out.split('\n')).toHaveLength(2);
   });
 });

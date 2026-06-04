@@ -89,6 +89,27 @@ export function mailboxASExpr(account?: string, mailbox?: string): string {
 }
 
 /**
+ * Normalize a recipient input (a single comma-separated string, or an array of
+ * addresses) into a trimmed, non-empty address list. Used by send_email / reply.
+ */
+export function normalizeAddresses(input?: string | string[]): string[] {
+  if (!input) return [];
+  const arr = Array.isArray(input) ? input : input.split(',');
+  return arr.map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * Build the AppleScript `make new <kind> recipient …` lines for an outgoing message,
+ * one per address, escaped for AppleScript double-quote literals. Empty list → "".
+ * Meant to run inside a `tell <outgoingMessage>` block.
+ */
+export function buildRecipientLines(kind: 'to' | 'cc' | 'bcc', addresses: string[]): string {
+  return addresses
+    .map(a => `make new ${kind} recipient at end of ${kind} recipients with properties {address:"${escAS(a)}"}`)
+    .join('\n          ');
+}
+
+/**
  * Parse the §REC§-record / §§§-field mailbox listing emitted by the list-mailboxes
  * script. One mailbox per record: account §§§ name §§§ unreadCount.
  */

@@ -240,6 +240,79 @@ class AppleMCPServer {
               required: ['searchTerm'],
             },
           },
+          {
+            name: 'mark_email',
+            description: 'Mark a message read or unread by its integer id (from get_emails/search_emails), scoped to a mailbox (default Inbox).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                messageId: {                 description: 'The integer message id' },
+                read:      {                 description: 'true = mark read, false = mark unread' },
+                mailbox:   { type: 'string', description: 'Mailbox the message is in (optional, default Inbox)' },
+                account:   { type: 'string', description: 'Account the mailbox belongs to (optional)' },
+              },
+              required: ['messageId', 'read'],
+            },
+          },
+          {
+            name: 'move_email',
+            description: 'Move a message (by integer id) from its mailbox to a destination mailbox.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                messageId:   {                 description: 'The integer message id' },
+                destMailbox: { type: 'string', description: 'Destination mailbox name (well-known names map to the unified mailbox)' },
+                mailbox:     { type: 'string', description: 'Source mailbox the message is currently in (optional, default Inbox)' },
+                account:     { type: 'string', description: 'Source account (optional)' },
+                destAccount: { type: 'string', description: 'Account that owns the destination mailbox (optional)' },
+              },
+              required: ['messageId', 'destMailbox'],
+            },
+          },
+          {
+            name: 'trash_email',
+            description: 'Move a message (by integer id) to Trash. Honors the account\'s deleted-messages setting.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                messageId: {                 description: 'The integer message id' },
+                mailbox:   { type: 'string', description: 'Mailbox the message is in (optional, default Inbox)' },
+                account:   { type: 'string', description: 'Account the mailbox belongs to (optional)' },
+              },
+              required: ['messageId'],
+            },
+          },
+          {
+            name: 'send_email',
+            description: 'Compose and SEND a new email immediately (no draft, no window). to/cc/bcc accept a single comma-separated string or an array of addresses.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                to:      { description: 'Recipient address(es) — string (comma-separated) or array' },
+                subject: { type: 'string', description: 'Subject line' },
+                body:    { type: 'string', description: 'Plain-text body' },
+                cc:      { description: 'CC address(es) (optional)' },
+                bcc:     { description: 'BCC address(es) (optional)' },
+                sender:  { type: 'string', description: 'From address — must be one of your configured account addresses (optional)' },
+              },
+              required: ['to', 'subject', 'body'],
+            },
+          },
+          {
+            name: 'reply_to_email',
+            description: 'Reply to a message (by integer id, scoped to a mailbox) and SEND immediately. Your body is prepended above Mail\'s quoted original.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                messageId: {                 description: 'The integer message id to reply to' },
+                body:      { type: 'string', description: 'Your reply text (prepended above the quoted original)' },
+                mailbox:   { type: 'string', description: 'Mailbox the original is in (optional, default Inbox)' },
+                account:   { type: 'string', description: 'Account the mailbox belongs to (optional)' },
+                replyAll:  {                 description: 'Reply to all recipients instead of just the sender (optional)' },
+              },
+              required: ['messageId', 'body'],
+            },
+          },
         ],
       };
     });
@@ -416,6 +489,64 @@ class AppleMCPServer {
               },
             );
             return { content: [{ type: 'text', text: JSON.stringify(emails, null, 2) }] };
+          }
+
+          case 'mark_email': {
+            const read = args.read === true || args.read === 'true';
+            await this.mail.setReadStatus(
+              Number(args.messageId),
+              read,
+              args.mailbox as string | undefined,
+              args.account as string | undefined,
+            );
+            return { content: [{ type: 'text', text: `Message ${args.messageId} marked ${read ? 'read' : 'unread'}` }] };
+          }
+
+          case 'move_email': {
+            await this.mail.moveEmail(
+              Number(args.messageId),
+              args.destMailbox as string,
+              {
+                mailbox:     args.mailbox as string | undefined,
+                account:     args.account as string | undefined,
+                destAccount: args.destAccount as string | undefined,
+              },
+            );
+            return { content: [{ type: 'text', text: `Message ${args.messageId} moved to ${args.destMailbox}` }] };
+          }
+
+          case 'trash_email': {
+            await this.mail.trashEmail(
+              Number(args.messageId),
+              args.mailbox as string | undefined,
+              args.account as string | undefined,
+            );
+            return { content: [{ type: 'text', text: `Message ${args.messageId} moved to Trash` }] };
+          }
+
+          case 'send_email': {
+            await this.mail.sendEmail({
+              to:      args.to as string | string[],
+              subject: args.subject as string,
+              body:    args.body as string,
+              cc:      args.cc as string | string[] | undefined,
+              bcc:     args.bcc as string | string[] | undefined,
+              sender:  args.sender as string | undefined,
+            });
+            return { content: [{ type: 'text', text: 'Email sent' }] };
+          }
+
+          case 'reply_to_email': {
+            await this.mail.replyToEmail(
+              Number(args.messageId),
+              args.body as string,
+              {
+                mailbox:  args.mailbox as string | undefined,
+                account:  args.account as string | undefined,
+                replyAll: args.replyAll !== undefined ? (args.replyAll === true || args.replyAll === 'true') : undefined,
+              },
+            );
+            return { content: [{ type: 'text', text: `Reply sent to message ${args.messageId}` }] };
           }
 
           default:

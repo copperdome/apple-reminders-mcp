@@ -163,14 +163,24 @@ Sequence:
   Access so the spawned binary works in production?** If not, the binary may need to run such that it
   carries its own grant. Test this BEFORE finishing the Node swap.
 
-**TRACK 3 — Mail suite (net-new). ◀ YOU ARE HERE (TRACK 1 + 2 done).** Read `docs/mail-dictionary.md`
-first (object model differs from Reminders AND Calendar). `src/mail-executor.ts` does not exist yet.
-Implement simplest→complex,
-each tool committed independently: list_mailboxes, get_emails, get_email, search_emails, send_email,
-reply_to_email, move_email, mark_read/unread, trash_email. Put script-gen + parsing as pure exported
-functions (in `applescript-util.ts` or a new `mail-util.ts`) with regression tests BEFORE wiring into
-`mail-executor.ts`. Use the heredoc form (`osascript <<'APPLESCRIPT'`) + `escAS()` for all inputs.
-Wire `MailExecutor` into `index.ts` exactly like `CalendarExecutor` (import, construct, schemas, cases).
+**TRACK 3 — Mail suite (net-new). ◀ IN PROGRESS — code-complete, NOT yet live-verified (2026-06-03).**
+All 9 tools implemented across two pushed increments:
+  - **Step 1 (read), commit `2f71213`:** `list_mailboxes`, `get_emails`, `get_email`, `search_emails`.
+  - **Step 2 (mutating/sending):** `mark_email`, `move_email`, `trash_email`, `send_email`,
+    `reply_to_email`.
+New pure layer `src/mail-util.ts` (escAS reuse, `mailboxASExpr` resolver, §REC§/§§§ parsers,
+`normalizeAddresses`/`buildRecipientLines`) with regression tests in `test/mail-util.test.ts` (80 total
+green). `src/mail-executor.ts` uses the heredoc form (`osascript <<'APPLESCRIPT'`) + `escAS()`, exactly
+like Reminders; wired into `index.ts` (import, construct, schemas, cases) like `CalendarExecutor`.
+Key design (see CLAUDE.md Mail section): messages addressed by **mailbox + integer id** (no app-level
+id lookup); `search_emails` matches subject/sender only (no body scan → no IMAP-download timeout);
+recipient lists join on U+0001; `send_email`/`reply_to_email` **send immediately** (no draft).
+**◀ NEXT: live verification.** Restart Claude Desktop, accept the Mail Automation consent dialog, then
+run the matrix: list_mailboxes → get_emails (Inbox) → get_email by id → search_emails → mark/move/trash
+on a throwaway message → send_email + reply_to_email to a throwaway address. None of this can run from
+Claude's shell (needs the GUI automation grant + a restart). Watch for: message-ordering in get_emails
+(is item 1 newest?), `account of mailbox` populating correctly on the unified Inbox, and whether `reply`
++ immediate `send` works headless (visible:false).
 
 ### Environment reality (don't fight these)
 - **The MCP runs inside Claude Desktop; `dist/` changes need a Desktop restart to go live** (no

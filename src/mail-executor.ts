@@ -17,6 +17,8 @@ import {
   parseMailboxes,
   parseMessages,
   parseMessageDetail,
+  normalizeAddresses,
+  buildRecipientLines,
   type Mailbox,
   type MailMessage,
 } from './mail-util.js';
@@ -196,5 +198,139 @@ export class MailExecutor {
       end tell
     `;
     return parseMessages(await this.executeScript(script));
+  }
+
+  // ── Mutating tools ─────────────────────────────────────────────────────────
+
+  // Validate + floor a message id for safe inlining into a `whose id is N` filter
+  // (ids are never user free-text, but never inline an unchecked number all the same).
+  private requireId(messageId: number): number {
+    if (!Number.isFinite(messageId)) {
+      throw new Error(`Invalid message id: ${messageId} (expected the integer id from get_emails/search_emails)`);
+    }
+    return Math.floor(messageId);
+  }
+
+  // Run a script that locates a message by id and acts on it. The script must return
+  // "OK" on success or "NOTFOUND" if no message with that id exists in the mailbox.
+  private async runMessageAction(
+    id: number,
+    mailbox: string | undefined,
+    account: string | undefined,
+    actionLines: string,
+  ): Promise<void> {
+    const mbx = mailboxASExpr(account, mailbox);
+    const script = `
+      tell application "Mail"
+        set theMailbox to ${mbx}
+        set matches to (messages of theMailbox whose id is ${id})
+        if (count of matches) is 0 then return "NOTFOUND"
+        set msg to item 1 of matches
+        ${actionLines}
+        return "OK"
+      end tell
+    `;
+    const result = await this.executeScript(script);
+    if (result === 'NOTFOUND') {
+      throw new Error(`Message id ${id} not found in mailbox ${mailbox ?? 'Inbox'}${account ? ` (account ${account})` : ''}.`);
+    }
+  }
+
+  /** Mark a message read or unread by id (scoped to a mailbox, default Inbox). */
+  async setReadStatus(messageId: number, read: boolean, mailbox?: string, account?: string): Promise<void> {
+    const id = this.requireId(messageId);
+    await this.runMessageAction(id, mailbox, account, `set read status of msg to ${read ? 'true' : 'false'}`);
+  }
+
+  /**
+   * Move a message (by id, from a source mailbox/account) to a destination mailbox.
+   * The destination is resolved the same way as any mailbox (well-known names → unified
+   * mailbox; destAccount scopes it to one account).
+   */
+  async moveEmail(
+    messageId: number,
+    destMailbox: string,
+    opts: { mailbox?: string; account?: string; destAccount?: string } = {},
+  ): Promise<void> {
+    const id = this.requireId(messageId);
+    if (!destMailbox || !destMailbox.trim()) throw new Error('moveEmail requires a destination mailbox.');
+    const destExpr = mailboxASExpr(opts.destAccount, destMailbox);
+    await this.runMessageAction(id, opts.mailbox, opts.account, `move msg to (${destExpr})`);
+  }
+
+  /**
+   * Trash a message by id (Mail's `delete` moves it to the account's Trash, honoring the
+   * account's "move deleted messages to trash" setting). Scoped to a mailbox (default Inbox).
+   */
+  async trashEmail(messageId: number, mailbox?: string, account?: string): Promise<void> {
+    const id = this.requireId(messageId);
+    await this.runMessageAction(id, mailbox, account, `delete msg`);
+  }
+
+  // ── Sending ────────────────────────────────────────────────────────────────
+
+  /**
+   * Compose and SEND a new email immediately (no draft, no visible window). `to` may be a
+   * single comma-separated string or an array; cc/bcc likewise. `sender` optionally sets
+   * the From address (must be one of the account's configured addresses, else Mail errors).
+   */
+  async sendEmail(opts: {
+    to: string | string[];
+    subject: string;
+    body: string;
+    cc?: string | string[];
+    bcc?: string | string[];
+    sender?: string;
+  }): Promise<void> {
+    const to = normalizeAddresses(opts.to);
+    if (to.length === 0) throw new Error('sendEmail requires at least one "to" recipient.');
+    const cc = normalizeAddresses(opts.cc);
+    const bcc = normalizeAddresses(opts.bcc);
+    const senderLine = opts.sender ? `set sender of newMsg to "${escAS(opts.sender)}"` : '';
+    const script = `
+      tell application "Mail"
+        set newMsg to make new outgoing message with properties {subject:"${escAS(opts.subject ?? '')}", content:"${escAS(opts.body ?? '')}", visible:false}
+        ${senderLine}
+        tell newMsg
+          ${buildRecipientLines('to', to)}
+          ${buildRecipientLines('cc', cc)}
+          ${buildRecipientLines('bcc', bcc)}
+        end tell
+        send newMsg
+      end tell
+    `;
+    await this.executeScript(script);
+  }
+
+  /**
+   * Reply to a message (by id, scoped to a mailbox) and SEND immediately. The reply keeps
+   * Mail's quoted original; `body` is prepended above it. `replyAll` replies to all
+   * recipients instead of just the sender.
+   */
+  async replyToEmail(
+    messageId: number,
+    body: string,
+    opts: { mailbox?: string; account?: string; replyAll?: boolean } = {},
+  ): Promise<void> {
+    const id = this.requireId(messageId);
+    const mbx = mailboxASExpr(opts.account, opts.mailbox);
+    const script = `
+      tell application "Mail"
+        set theMailbox to ${mbx}
+        set matches to (messages of theMailbox whose id is ${id})
+        if (count of matches) is 0 then return "NOTFOUND"
+        set originalMsg to item 1 of matches
+        set replyMsg to reply originalMsg opening window false reply to all ${opts.replyAll ? 'true' : 'false'}
+        tell replyMsg
+          set content to "${escAS(body ?? '')}" & return & return & (content)
+        end tell
+        send replyMsg
+        return "OK"
+      end tell
+    `;
+    const result = await this.executeScript(script);
+    if (result === 'NOTFOUND') {
+      throw new Error(`Message id ${id} not found in mailbox ${opts.mailbox ?? 'Inbox'}${opts.account ? ` (account ${opts.account})` : ''}.`);
+    }
   }
 }
