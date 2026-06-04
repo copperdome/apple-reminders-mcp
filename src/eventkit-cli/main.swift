@@ -71,6 +71,25 @@ func requestAccess() -> Bool {
     return granted
 }
 
+// Reminders use a SEPARATE TCC entitlement from Calendar
+// (NSRemindersFullAccessUsageDescription). The grant is independent of the Calendar
+// grant even though both go through the same EKEventStore.
+func requestRemindersAccess() -> Bool {
+    let sem = DispatchSemaphore(value: 0)
+    var granted = false
+    var reqError: Error?
+    store.requestFullAccessToReminders { ok, err in
+        granted = ok
+        reqError = err
+        sem.signal()
+    }
+    sem.wait()
+    if let reqError = reqError {
+        FileHandle.standardError.write("reminders access error: \(reqError)\n".data(using: .utf8)!)
+    }
+    return granted
+}
+
 // MARK: - Dates
 
 // ISO 8601 in/out. Output is always UTC ("…Z") and unambiguous; the Node layer can
@@ -332,6 +351,276 @@ func toEventOut(_ ev: EKEvent) -> CalendarEventOut {
     )
 }
 
+// MARK: - Reminders
+
+// Output DTO. Mirrors the TS Reminder interface, expanded to the full EventKit
+// surface (startDate, completionDate, remindMeDate, url) now that we're off AppleScript.
+// Dates are ISO-8601 UTC strings; nil optionals are omitted from the JSON. `list` is the
+// calendar/list title; `id` is the calendarItemIdentifier (stable, used by update/delete).
+//
+// flagged / tags / parentId / isSubtask / section: EventKit's public API cannot read these
+// four Reminders features, so they are sourced BEST-EFFORT from the Reminders SQLite store
+// (see RemindersDB.swift), which requires Full Disk Access. They are OMITTED — not false /
+// not [] — when enrichment is unavailable (no FDA, store drift, or a local "On My Mac"
+// reminder with no CloudKit id). Absent ≠ false is deliberate: some reminders ARE
+// flagged/tagged on-device and we just couldn't read it, so we must not assert otherwise.
+// `--no-augment` skips the SQLite read entirely. Do NOT resurrect the old flagged:false /
+// tags:[] behaviour — that lied, which is why it was removed.
+struct ReminderOut: Encodable {
+    let id: String
+    let name: String
+    let body: String?
+    let completed: Bool
+    let list: String
+    let dueDate: String?
+    let startDate: String?
+    let completionDate: String?
+    let remindMeDate: String?
+    let priority: Int
+    let creationDate: String?
+    let modificationDate: String?
+    let url: String?
+    // RFC-2445 RRULE string for the first recurrence rule, or nil. EKReminder inherits
+    // recurrenceRules from EKCalendarItem (same as EKEvent), so reminders DO support
+    // recurrence — our old "not possible" note was wrong. A recurring reminder must have
+    // a due date to anchor the recurrence (enforced on create/update).
+    let recurrence: String?
+    // SQLite-sourced enrichment (nil ⇒ omitted; see RemindersDB.swift). parentId is the
+    // parent reminder's id (our id space); isSubtask is true only when parentId is present.
+    let flagged: Bool?
+    let tags: [String]?
+    let parentId: String?
+    let isSubtask: Bool?
+    let section: String?
+}
+
+struct ReminderListOut: Encodable {
+    let name: String
+    let id: String
+}
+
+func dateComponentsToDate(_ comps: DateComponents?) -> Date? {
+    guard let comps = comps else { return nil }
+    return Calendar.current.date(from: comps)
+}
+
+func toReminderOut(_ r: EKReminder, _ enrich: ReminderEnrichment? = nil) -> ReminderOut {
+    // The earliest absolute alarm date, if any, is the closest analog to AppleScript's
+    // "remind me date".
+    var remind: Date? = nil
+    if let alarms = r.alarms {
+        remind = alarms.compactMap { $0.absoluteDate }.min()
+    }
+    // isSubtask is true only when a parent id is present; otherwise nil ⇒ omitted (we
+    // never assert isSubtask:false, since absence of enrichment ≠ "not a subtask").
+    let isSubtask: Bool? = enrich?.parentId != nil ? true : nil
+    return ReminderOut(
+        id: r.calendarItemIdentifier,
+        name: r.title ?? "",
+        body: r.notes,
+        completed: r.isCompleted,
+        list: r.calendar?.title ?? "",
+        dueDate: dateComponentsToDate(r.dueDateComponents).map(isoString),
+        startDate: dateComponentsToDate(r.startDateComponents).map(isoString),
+        completionDate: r.completionDate.map(isoString),
+        remindMeDate: remind.map(isoString),
+        priority: r.priority,
+        creationDate: r.creationDate.map(isoString),
+        modificationDate: r.lastModifiedDate.map(isoString),
+        url: r.url?.absoluteString,
+        recurrence: r.recurrenceRules?.first.map(rruleString),
+        flagged: enrich?.flagged,
+        tags: enrich?.tags,
+        parentId: enrich?.parentId,
+        isSubtask: isSubtask,
+        section: enrich?.section
+    )
+}
+
+// Reminder "lists" are EKCalendars of type .reminder.
+func reminderList(named name: String) -> EKCalendar? {
+    return store.calendars(for: .reminder).first { $0.title == name }
+}
+
+// fetchReminders is ASYNC even though events() is sync — bridge with a semaphore. This
+// is the core perf win: ONE local-store query returns all matching reminders with no
+// per-item Apple Event (the AppleScript path cost ~37s for 339 reminders; this is
+// effectively instant).
+func fetchReminders(_ predicate: NSPredicate) -> [EKReminder] {
+    let sem = DispatchSemaphore(value: 0)
+    var result: [EKReminder] = []
+    store.fetchReminders(matching: predicate) { reminders in
+        result = reminders ?? []
+        sem.signal()
+    }
+    sem.wait()
+    return result
+}
+
+// Resolve a single reminder by calendarItemIdentifier (fast direct lookup).
+func findReminder(id: String) -> EKReminder? {
+    return store.calendarItem(withIdentifier: id) as? EKReminder
+}
+
+func cmdListReminderLists() {
+    let out = store.calendars(for: .reminder).map { c in
+        ReminderListOut(name: c.title, id: c.calendarIdentifier)
+    }
+    emitJSON(out)
+}
+
+func cmdGetReminders(_ a: [String: String]) {
+    let cals: [EKCalendar]?
+    if let name = a["list"] {
+        guard let c = reminderList(named: name) else { fail("get-reminders: list not found: \(name)") }
+        cals = [c]
+    } else {
+        cals = nil  // all lists
+    }
+    // completed flag: default false (incomplete) to match the old getReminders default.
+    let wantCompleted = (a["completed"] == "true")
+    let predicate: NSPredicate = wantCompleted
+        ? store.predicateForCompletedReminders(withCompletionDateStarting: nil, ending: nil, calendars: cals)
+        : store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: cals)
+    let reminders = fetchReminders(predicate)
+        .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+    // One SQLite open + a few batched scans, then an O(1) lookup per result. nil ⇒
+    // enrichment unavailable (no FDA / store drift) and all four fields are omitted.
+    let enrich = a["no-augment"] == "true" ? nil : loadReminderEnrichments()
+    emitJSON(reminders.map { toReminderOut($0, enrich?[$0.calendarItemIdentifier]) })
+}
+
+func cmdSearchReminders(_ a: [String: String]) {
+    let term = require(a, "term", "search-reminders").lowercased()
+    let cals: [EKCalendar]?
+    if let name = a["list"] {
+        guard let c = reminderList(named: name) else { fail("search-reminders: list not found: \(name)") }
+        cals = [c]
+    } else {
+        cals = nil
+    }
+    // Search incomplete reminders by name OR body, matching the old searchReminders.
+    let predicate = store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: cals)
+    let reminders = fetchReminders(predicate).filter { r in
+        let name = (r.title ?? "").lowercased()
+        let notes = (r.notes ?? "").lowercased()
+        return name.contains(term) || notes.contains(term)
+    }.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+    let enrich = a["no-augment"] == "true" ? nil : loadReminderEnrichments()
+    emitJSON(reminders.map { toReminderOut($0, enrich?[$0.calendarItemIdentifier]) })
+}
+
+// Build a DateComponents from an ISO date for due/start (EKReminder wants components,
+// not a Date). We include the full Y/M/D H:M so timed reminders keep their time.
+func dueComponents(from date: Date) -> DateComponents {
+    return Calendar.current.dateComponents(
+        [.year, .month, .day, .hour, .minute, .second], from: date)
+}
+
+func cmdCreateReminder(_ a: [String: String]) {
+    let listName = require(a, "list", "create-reminder")
+    guard let cal = reminderList(named: listName) else { fail("create-reminder: list not found: \(listName)") }
+    let name = require(a, "name", "create-reminder")
+
+    let r = EKReminder(eventStore: store)
+    r.calendar = cal
+    r.title = name
+    if let body = a["body"] { r.notes = body }
+    if let prioStr = a["priority"], let prio = Int(prioStr) { r.priority = prio }
+    if let dueStr = a["due"] {
+        guard let d = parseDate(dueStr) else { fail("create-reminder: bad --due date: \(dueStr)") }
+        r.dueDateComponents = dueComponents(from: d)
+        // A reminder with a due date but no alarm won't notify; add an alarm at due time
+        // unless an explicit --remind is given below.
+        if a["remind"] == nil {
+            r.addAlarm(EKAlarm(absoluteDate: d))
+        }
+    }
+    if let remindStr = a["remind"] {
+        guard let d = parseDate(remindStr) else { fail("create-reminder: bad --remind date: \(remindStr)") }
+        r.addAlarm(EKAlarm(absoluteDate: d))
+    }
+    if let urlStr = a["url"], let url = URL(string: urlStr) { r.url = url }
+    if let rruleStr = a["recurrence"], !rruleStr.isEmpty {
+        // A recurring reminder MUST have a due date to anchor the recurrence — EventKit
+        // rejects the save otherwise (mirrors Reminders.app: no repeat without a date).
+        guard r.dueDateComponents != nil else {
+            fail("create-reminder: --recurrence requires --due (a recurring reminder needs a due date to anchor to).")
+        }
+        guard let rule = parseRRULE(rruleStr) else { fail("create-reminder: invalid --recurrence RRULE: \(rruleStr)") }
+        r.addRecurrenceRule(rule)
+    }
+
+    do {
+        try store.save(r, commit: true)
+    } catch {
+        fail("create-reminder: save failed: \(error.localizedDescription)")
+    }
+    emitJSON(["id": r.calendarItemIdentifier])
+}
+
+func cmdUpdateReminder(_ a: [String: String]) {
+    let id = require(a, "id", "update-reminder")
+    guard let r = findReminder(id: id) else { fail("update-reminder: reminder not found for id: \(id)") }
+
+    if let name = a["name"] { r.title = name }
+    if let body = a["body"] { r.notes = body }
+    if let completedStr = a["completed"] { r.isCompleted = (completedStr == "true") }
+    if let prioStr = a["priority"], let prio = Int(prioStr) { r.priority = prio }
+    if let dueStr = a["due"] {
+        if dueStr.isEmpty {
+            r.dueDateComponents = nil
+        } else {
+            guard let d = parseDate(dueStr) else { fail("update-reminder: bad --due date: \(dueStr)") }
+            r.dueDateComponents = dueComponents(from: d)
+        }
+    }
+    if let remindStr = a["remind"] {
+        // Replace existing alarms.
+        r.alarms?.forEach { r.removeAlarm($0) }
+        if !remindStr.isEmpty {
+            guard let d = parseDate(remindStr) else { fail("update-reminder: bad --remind date: \(remindStr)") }
+            r.addAlarm(EKAlarm(absoluteDate: d))
+        }
+    }
+    if let urlStr = a["url"] { r.url = urlStr.isEmpty ? nil : URL(string: urlStr) }
+    if let rruleStr = a["recurrence"] {
+        // Replace any existing rule(s); an empty value clears recurrence. This block runs
+        // after the --due handling above, so a combined --due + --recurrence update has
+        // the due date set before we anchor the rule.
+        r.recurrenceRules?.forEach { r.removeRecurrenceRule($0) }
+        if !rruleStr.isEmpty {
+            guard r.dueDateComponents != nil else {
+                fail("update-reminder: --recurrence requires the reminder to have a due date (pass --due too, or set one first).")
+            }
+            guard let rule = parseRRULE(rruleStr) else { fail("update-reminder: invalid --recurrence RRULE: \(rruleStr)") }
+            r.addRecurrenceRule(rule)
+        }
+    }
+
+    do {
+        try store.save(r, commit: true)
+    } catch {
+        fail("update-reminder: save failed: \(error.localizedDescription)")
+    }
+    emitJSON(["id": r.calendarItemIdentifier])
+}
+
+func cmdDeleteReminder(_ a: [String: String]) {
+    let id = require(a, "id", "delete-reminder")
+    guard let r = findReminder(id: id) else { fail("delete-reminder: reminder not found for id: \(id)") }
+    do {
+        try store.remove(r, commit: true)
+    } catch {
+        fail("delete-reminder: remove failed: \(error.localizedDescription)")
+    }
+    // Honest verification: a direct id lookup should now return nil.
+    if findReminder(id: id) != nil {
+        fail("delete-reminder: remove reported success but reminder \(id) still exists.")
+    }
+    emitJSON(["deleted": true])
+}
+
 // MARK: - Argument parsing
 // Dumb --flag value pairs into a dict. A --flag with no following value (or followed
 // by another --flag) is a boolean flag set to "true".
@@ -518,15 +807,32 @@ func spanArg(_ a: [String: String], recurring: Bool) -> EKSpan {
 
 let argv = CommandLine.arguments
 guard argv.count >= 2 else {
-    fail("usage: eventkit-cli <list-calendars|get-events|search-events|create-event|update-event|delete-event> [--flags]")
-}
-
-guard requestAccess() else {
-    fail("Full Calendar Access not granted. Approve the prompt (or System Settings → Privacy & Security → Calendars) and retry. Note: the grant is attributed to the responsible GUI app.", exitCode: 3)
+    fail("usage: eventkit-cli <calendar|reminder command> [--flags]\n" +
+         "  calendar: list-calendars|get-events|search-events|create-event|update-event|delete-event\n" +
+         "  reminder: list-reminder-lists|get-reminders|search-reminders|create-reminder|update-reminder|delete-reminder")
 }
 
 let command = argv[1]
 let flags = parseArgs(argv.dropFirst(2))
+
+// Calendar and Reminders are SEPARATE TCC grants. Request only the one the command
+// needs, so a Reminders command isn't blocked by a missing Calendar grant (and vice
+// versa). Each grant is attributed to the responsible GUI app (Terminal, or Claude
+// Desktop when the MCP spawns this) — see HANDOFF/build-eventkit.sh.
+let reminderCommands: Set<String> = [
+    "list-reminder-lists", "get-reminders", "search-reminders",
+    "create-reminder", "update-reminder", "delete-reminder",
+]
+
+if reminderCommands.contains(command) {
+    guard requestRemindersAccess() else {
+        fail("Full Reminders Access not granted. Approve the prompt (or System Settings → Privacy & Security → Reminders) and retry. Note: the grant is attributed to the responsible GUI app.", exitCode: 3)
+    }
+} else {
+    guard requestAccess() else {
+        fail("Full Calendar Access not granted. Approve the prompt (or System Settings → Privacy & Security → Calendars) and retry. Note: the grant is attributed to the responsible GUI app.", exitCode: 3)
+    }
+}
 
 switch command {
 case "list-calendars":
@@ -541,6 +847,18 @@ case "update-event":
     cmdUpdateEvent(flags)
 case "delete-event":
     cmdDeleteEvent(flags)
+case "list-reminder-lists":
+    cmdListReminderLists()
+case "get-reminders":
+    cmdGetReminders(flags)
+case "search-reminders":
+    cmdSearchReminders(flags)
+case "create-reminder":
+    cmdCreateReminder(flags)
+case "update-reminder":
+    cmdUpdateReminder(flags)
+case "delete-reminder":
+    cmdDeleteReminder(flags)
 default:
     fail("unknown command: \(command)")
 }

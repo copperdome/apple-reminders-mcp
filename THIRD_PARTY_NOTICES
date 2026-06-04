@@ -1,0 +1,67 @@
+THIRD-PARTY NOTICES
+===================
+
+This project incorporates material derived from third-party open-source software.
+The original copyright notices and license terms are reproduced below.
+
+
+--------------------------------------------------------------------------------
+RemCTL — Reminders command-line tool by Federico Viticci
+--------------------------------------------------------------------------------
+
+The Reminders SQLite enrichment in `src/eventkit-cli/RemindersDB.swift` (and, in a
+later change, the private-ReminderKit write path in `src/eventkit-cli/RemindersPrivate.m`)
+is a Swift/Objective-C re-implementation that PORTS the proven primitives from RemCTL:
+the store-location heuristic, the Core Data schema and SQL queries, and the ReminderKit
+selector sequence. Orchestration was rewritten; the queries and selectors are RemCTL's.
+
+What was ported into RemindersDB.swift (read path, Phase 1):
+  - Store location: largest `Data-*.sqlite` under
+    `~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/`
+    (RemCTL `remctl:194`, `remctl_runtime.py:13`).
+  - Tags: `SELECT o.ZREMINDER3, h.ZNAME FROM ZREMCDOBJECT o
+    JOIN ZREMCDHASHTAGLABEL h ON o.ZHASHTAGLABEL = h.Z_PK`
+    (RemCTL `remctl_serialization.py:155-159`).
+  - flagged / subtask: `ZREMCDREMINDER.ZFLAGGED`, `ZREMCDREMINDER.ZPARENTREMINDER`.
+  - Sections: `ZREMCDBASESECTION` + per-reminder membership
+    (RemCTL `remctl:1481-1526`, `q_section_memberships` at `remctl:1493-1526`).
+  - Full Disk Access is a manual grant with no Info.plist usage key
+    (RemCTL `remctl-permissions.swift:124,193`).
+
+To be ported into RemindersPrivate.m (write path, Phase 2 — follow-up):
+  - ReminderKit selectors from RemCTL `remctl-private.m` (REMStore /
+    REMSaveRequest / REMReminderChangeItem / REMObjectID / REMMembership), e.g.
+    `:31`, `:176-184`, `:570`, `:640`, `:732`, and section ckid resolution
+    (`remctl:3073`).
+
+Reference checkout used while porting: /Users/john/remctl-reference
+Reference commit SHA: <FILL IN from `git -C /Users/john/remctl-reference rev-parse HEAD`>
+Project: https://github.com/viticci/RemCTL   (verify URL against the checkout)
+
+RemCTL is distributed under the MIT License:
+
+    MIT License
+
+    Copyright (c) Federico Viticci
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+NOTE: Confirm RemCTL's exact copyright line and the verbatim LICENSE text against the
+reference checkout (`/Users/john/remctl-reference/LICENSE`) and replace the SHA/URL
+placeholders above before publishing — the Linux porting session could not read them.

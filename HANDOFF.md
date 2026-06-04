@@ -10,6 +10,96 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
+### TRACK 4 — Reminders → EventKit port (2026-06-04). CODE COMPLETE, build/live-verify OWED by John.
+**What happened:** Reminders MCP tools were timing out (even `list_reminder_lists`). Diagnosis chain
+ruled out iCloud sync, a wedged process, and a stale TCC grant for `node` (that last one was real and
+fixed via `tccutil reset AppleEvents` — `list_reminder_lists` then worked). But `get_reminders` still
+timed out. Root cause, measured live on a **339-reminder** store: AppleScript per-item Apple Events.
+Names-only enumeration = 6.85s; adding `name of container of rem` per reminder → 60s+; the MCP's real
+query (`properties of rem` + container + `whose completed`) → 37s, past the 28s ceiling. **Never iCloud
+sync** — the old catch-block message ("Reminders may be syncing") was wrong and misdirected the whole
+morning. John chose the structural fix: **port Reminders to the existing EventKit CLI** (`fetchReminders`
+= one local-store query, no per-item round-trip).
+
+**Done (committed? NO — uncommitted working tree as of this writing):**
+- `src/eventkit-cli/main.swift` — added `requestRemindersAccess()` + 6 subcommands
+  (`list-reminder-lists`, `get-reminders`, `search-reminders`, `create-reminder`, `update-reminder`,
+  `delete-reminder`). `fetchReminders` bridged sync via DispatchSemaphore. Command dispatch requests
+  only the needed TCC grant (Reminders vs Calendar).
+- `src/eventkit-cli/Info.plist` — added `NSRemindersFullAccessUsageDescription` + `NSRemindersUsageDescription`.
+- `src/reminders-executor.ts` (NEW, replaces deleted `applescript-executor.ts`) — `RemindersExecutor`
+  class, same method signatures index.ts used, **expanded `Reminder` type** (startDate, completionDate,
+  remindMeDate, url added; flagged always false, tags always [] — EventKit/Apple limits).
+- `src/reminders-util.ts` (NEW) — pure CLI arg-builders + re-exported `parseCliJson`.
+- `src/applescript-util.ts` — trimmed to just `escAS` (Mail's only dependency). Removed
+  `parseReminders`/`isoToAppleScriptDate`/`parseEvents`/`interpretDeleteResult` (all dead).
+- `src/index.ts` — swapped import/constructor to `RemindersExecutor`; `create_reminder`/`update_reminder`
+  handlers wire `recurrence` through (and `create_reminder` dropped the unsupported flagged/tags args).
+- **Recurrence added (John, same session):** EKReminder DOES support recurrence via the inherited
+  `EKCalendarItem.recurrenceRules`, so reminders reuse the Calendar `parseRRULE`/`rruleString` helpers.
+  `get-reminders` emits a `recurrence` RRULE field; create/update accept `--recurrence`. **A recurring
+  reminder MUST have a due date** (the CLI fails fast otherwise); empty `--recurrence` clears the rule.
+  `Reminder` type gained `recurrence?`; flagged/tags omitted entirely (not emitted as false/[]).
+- `test/reminders-util.test.ts` (NEW, 21 tests incl. recurrence) + trimmed `applescript-util.test.ts` to escAS.
+
+**✅ VERIFIED LIVE (2026-06-04, John's Terminal — `bash src/eventkit-cli/verify-reminders.sh`):**
+All pass criteria met — `get-reminders` timed **<1s** (vs the 37s+ AppleScript hang that triggered the
+port); create/update/delete round-tripped; the due-date guard (`--recurrence` without `--due`) FAILED
+cleanly; the recurring reminder carried an RRULE then cleared it. `npm test` → 84 green, `tsc` clean.
+The reusable live-verification script is `src/eventkit-cli/verify-reminders.sh` (self-cleaning,
+throwaway `[EK-TEST]` data — re-run any time after touching the reminder commands).
+
+**Remaining:** restart Claude Desktop so the MCP picks up the rebuilt binary, and confirm the Reminders
+TCC grant is attributed to Claude Desktop too (spawn from the MCP, not just Terminal). Then this track
+is fully closed.
+
+### TRACK 5 — Reminders flagged / tags / subtasks / sections, READ augmentation (PR #1). CODE COMPLETE on Linux; build/live-verify OWED on the Mac.
+**Why:** EventKit's public API cannot read four Reminders features — flagged, #hashtag tags, subtask
+(parent/child), section. TRACK 4 omitted flagged/tags rather than lie (flagged:false/tags:[]). This
+track reads all four BEST-EFFORT from the Reminders SQLite store, ported with attribution from Federico
+Viticci's RemCTL (MIT). **Writes are a separate follow-up (Phase 2 / PR #2)** via the private ReminderKit
+framework — NOT in this PR. Decisions: include `section` in this read cut; surface subtask as both
+`parentId` (parent's id) and a derived `isSubtask` boolean.
+
+**The key that makes it work (verified live 2026-06-04):** our reminder `id` (EventKit
+`calendarItemIdentifier`) == `ZREMCDREMINDER.ZCKIDENTIFIER`, so the enrichment map keys 1:1 with the
+reminders we already fetch — no translation.
+
+**Done (code; this branch `reminders-flagged-tags-subtasks-sections-read`):**
+- `src/eventkit-cli/RemindersDB.swift` (NEW) — `loadReminderEnrichments() -> [String: ReminderEnrichment]?`,
+  read-only SQLite (`import SQLite3`, C API, no SPM). Locates the largest `Data-*.sqlite`, opens
+  `file:…?immutable=1` (lock-free), loads flagged + parentId (base scan + Z_PK→ckid index), tags
+  (ZREMCDOBJECT⋈ZREMCDHASHTAGLABEL), section (ZREMCDBASESECTION + membership). **Per-field independent
+  prepares** → one drifted table/column nils only that field; any open/base-scan failure ⇒ whole thing
+  returns nil and reads degrade silently. Never throws, never `fail()`s.
+- `main.swift` — `ReminderOut` gains `flagged?/tags?/parentId?/isSubtask?/section?`; `toReminderOut`
+  takes an optional `ReminderEnrichment`; `cmdGetReminders`/`cmdSearchReminders` load the map once
+  (O(1) lookup per result) with a `--no-augment` opt-out. Old "deliberately NO flagged/tags" comment
+  replaced with the best-effort/omitted-≠-false rationale.
+- `build-eventkit.sh` — `-lsqlite3`, second source `RemindersDB.swift`, staleness check on it.
+- `reminders-executor.ts` `Reminder` — added the five optional fields + comment (present only with FDA;
+  omitted, never false/[], otherwise).
+- `index.ts` — `get_reminders`/`search_reminders` descriptions note the four fields appear with FDA.
+- `test/reminders-util.test.ts` — added the "omitted ≠ false" parse round-trip (now **85 green**).
+
+**TCC:** reads need **Full Disk Access** (NEW) — a MANUAL grant (System Settings → Privacy & Security →
+Full Disk Access), **no Info.plist key** (confirmed `remctl-permissions.swift:124,193`), attributed to
+the responsible GUI app (Terminal for the CLI, Claude Desktop when the MCP spawns it). Reminders Full
+Access (TRACK 4) is still required and unchanged.
+
+**⚠️ OWED on the Mac (can't run on Linux — no swiftc/EventKit/SQLite store):**
+1. `npm run build` (compiles both Swift sources + `-lsqlite3`, re-signs). Confirm clean compile.
+2. Grant Terminal Full Disk Access. Seed: flag "FLAGTEST"; tag "TAGTEST" `#verifytag`; "PARENT"+subtask
+   "CHILD"; one reminder in a named section. Run `…/build/eventkit-cli get-reminders` → the four fields
+   appear on the seeded items, **absent** on others; `--no-augment` hides all four; pull FDA → all
+   reminders still return with the fields absent (exit 0).
+3. **Section query needs schema confirmation:** the membership join in `loadSections()` assumes
+   `ZREMCDREMINDER.ZSECTION` points at the `ZREMCDBASESECTION` row (a best-guess port — the RemCTL
+   reference wasn't readable from the Linux session). If the column differs, only `section` degrades to
+   nil; cross-check against `/Users/john/remctl-reference/remctl:1493-1526` (`q_section_memberships`)
+   and fix the one query.
+4. Confirm through Claude Desktop (FDA granted to it). Then re-use/extend `verify-reminders.sh`.
+
 ### Current state — clean, committed, pushed. TRACK 1 + TRACK 2 + TRACK 3 (Mail) DONE — all prod-verified.
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).

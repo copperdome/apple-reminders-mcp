@@ -10,5 +10,9 @@
 	<string>apple-reminders-mcp manages your Calendar events (list, search, create, update, delete) via EventKit.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>apple-reminders-mcp manages your Calendar events (list, search, create, update, delete) via EventKit.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>apple-reminders-mcp manages your Reminders (list, search, create, update, delete) via EventKit.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>apple-reminders-mcp manages your Reminders (list, search, create, update, delete) via EventKit.</string>
 </dict>
 </plist>

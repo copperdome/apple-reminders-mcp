@@ -1,4 +1,5 @@
-// ABOUTME: MCP server exposing both Apple Reminders and Apple Calendar via AppleScript
+// ABOUTME: MCP server exposing Apple Reminders, Calendar, and Mail. Reminders and
+// Calendar go through the EventKit CLI (src/eventkit-cli); Mail still uses AppleScript.
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -6,13 +7,13 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { AppleScriptExecutor } from './applescript-executor.js';
+import { RemindersExecutor } from './reminders-executor.js';
 import { CalendarExecutor } from './calendar-executor.js';
 import { MailExecutor } from './mail-executor.js';
 
 class AppleMCPServer {
   private server: Server;
-  private reminders: AppleScriptExecutor;
+  private reminders: RemindersExecutor;
   private calendar: CalendarExecutor;
   private mail: MailExecutor;
 
@@ -21,7 +22,7 @@ class AppleMCPServer {
       { name: 'apple-mcp', version: '2.0.0' },
       { capabilities: { tools: {} } }
     );
-    this.reminders = new AppleScriptExecutor();
+    this.reminders = new RemindersExecutor();
     this.calendar  = new CalendarExecutor();
     this.mail      = new MailExecutor();
     this.setupToolHandlers();
@@ -39,7 +40,7 @@ class AppleMCPServer {
           },
           {
             name: 'get_reminders',
-            description: 'Get reminders from a specific list or all lists. Returns flagged, dueDate, priority. Pass searchTerm to filter by text (routes to search internally — prefer search_reminders for pure text search).',
+            description: 'Get reminders from a specific list or all lists. Returns dueDate, priority, remindMeDate, body, url. Also returns flagged, tags, parentId/isSubtask, and section when Full Disk Access is granted; these are omitted (not false/empty) otherwise. Pass searchTerm to filter by text (routes to search internally — prefer search_reminders for pure text search).',
             inputSchema: {
               type: 'object',
               properties: {
@@ -51,7 +52,7 @@ class AppleMCPServer {
           },
           {
             name: 'create_reminder',
-            description: 'Create a new reminder. Supports flagged, priority, dueDate, body, and early alarm.',
+            description: 'Create a new reminder. Supports priority, dueDate, body, an early alarm, and recurrence (RFC 2445 RRULE). (Flagged state and #hashtag tags are not settable — EventKit has no API for them.)',
             inputSchema: {
               type: 'object',
               properties: {
@@ -60,9 +61,8 @@ class AppleMCPServer {
                 body:                 { type: 'string', description: 'Notes/body (optional)' },
                 dueDate:              { type: 'string', description: 'Due date, e.g. "April 8, 2026 at 7:30 AM" (optional)' },
                 priority:             {                 description: '0=none 1=high 5=medium 9=low (optional)' },
-                flagged:              {                 description: 'Flag the reminder (optional)' },
-                tags:                 {                 description: 'Tag strings — not supported by AppleScript, stored for future use' },
                 earlyReminderMinutes: {                 description: 'Minutes before due date for early alert (optional)' },
+                recurrence:           { type: 'string', description: 'RFC 2445 RRULE, e.g. "FREQ=WEEKLY;INTERVAL=2" (optional). REQUIRES dueDate — a recurring reminder must have a due date to anchor to.' },
               },
               required: ['name', 'listName'],
             },
@@ -79,9 +79,8 @@ class AppleMCPServer {
                 completed:      {                 description: 'Mark complete/incomplete' },
                 dueDate:        { type: 'string' },
                 priority:       {                 description: '0=none 1=high 5=medium 9=low' },
-                flagged:        {                 description: 'Set flagged status' },
-                tags:           {                 description: 'Not supported via AppleScript, ignored' },
                 remindMeDate:   { type: 'string', description: 'Explicit remind-me date/time' },
+                recurrence:     { type: 'string', description: 'RFC 2445 RRULE, e.g. "FREQ=DAILY". Empty string clears recurrence. A non-empty rule requires the reminder to have a due date.' },
               },
               required: ['reminderId'],
             },
@@ -99,7 +98,7 @@ class AppleMCPServer {
           },
           {
             name: 'search_reminders',
-            description: 'Search incomplete reminders by name or body text. Equivalent to get_reminders with a searchTerm — use this for quick text searches, get_reminders when you also need to filter by list or completion status.',
+            description: 'Search incomplete reminders by name or body text. Equivalent to get_reminders with a searchTerm — use this for quick text searches, get_reminders when you also need to filter by list or completion status. Also returns flagged, tags, parentId/isSubtask, and section when Full Disk Access is granted; omitted otherwise.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -130,7 +129,7 @@ class AppleMCPServer {
           },
           {
             name: 'create_event',
-            description: 'Create a calendar event. Recurrence works via RFC 2445 RRULE strings (unlike Reminders). Returns the new event UID.',
+            description: 'Create a calendar event. Recurrence works via RFC 2445 RRULE strings. Returns the new event UID.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -141,7 +140,7 @@ class AppleMCPServer {
                 description:  { type: 'string', description: 'Event notes (optional)' },
                 location:     { type: 'string', description: 'Event location (optional)' },
                 allDay:       {                 description: 'True for all-day event (optional)' },
-                recurrence:   { type: 'string', description: 'RFC 2445 RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO,WE,FR" (optional). NOTE: recurrence IS writable in Calendar (unlike Reminders).' },
+                recurrence:   { type: 'string', description: 'RFC 2445 RRULE, e.g. "FREQ=WEEKLY;BYDAY=MO,WE,FR" (optional).' },
                 url:          { type: 'string', description: 'URL to associate with event (optional)' },
               },
               required: ['calendarName', 'summary', 'startDate', 'endDate'],
@@ -356,9 +355,8 @@ class AppleMCPServer {
               args.body as string | undefined,
               args.dueDate as string | undefined,
               args.priority !== undefined ? Number(args.priority) : undefined,
-              args.flagged !== undefined ? (args.flagged === true || args.flagged === 'true') : undefined,
-              args.tags !== undefined ? (typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags) : undefined,
               args.earlyReminderMinutes !== undefined ? Number(args.earlyReminderMinutes) : undefined,
+              args.recurrence as string | undefined,
             );
             return { content: [{ type: 'text', text: `Reminder created: ${reminderId}` }] };
           }
@@ -370,9 +368,8 @@ class AppleMCPServer {
             if (args.completed !== undefined) updates.completed = args.completed === true || args.completed === 'true';
             if (args.dueDate   !== undefined) updates.dueDate   = args.dueDate;
             if (args.priority  !== undefined) updates.priority  = Number(args.priority);
-            if (args.flagged   !== undefined) updates.flagged   = args.flagged === true || args.flagged === 'true';
-            if (args.tags      !== undefined) updates.tags      = typeof args.tags === 'string' ? JSON.parse(args.tags) : args.tags;
             if (args.remindMeDate   !== undefined) updates.remindMeDate   = args.remindMeDate;
+            if (args.recurrence     !== undefined) updates.recurrence     = args.recurrence;
             await this.reminders.updateReminder(args.reminderId as string, updates);
             return { content: [{ type: 'text', text: `Reminder ${args.reminderId} updated` }] };
           }
