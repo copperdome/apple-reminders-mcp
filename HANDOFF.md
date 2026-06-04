@@ -10,7 +10,7 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 **Read context first:** this file + `CLAUDE.md` (auto-loads) + `docs/RESEARCH-caldav-recurring-delete.md`
 (the EventKit/CalDAV research) + `docs/mail-dictionary.md` (before any Mail work).
 
-### Current state — clean, committed, pushed. TRACK 1 + TRACK 2 DONE (prod-verified). TRACK 3 (Mail) is next.
+### Current state — clean, committed, pushed. TRACK 1 + TRACK 2 + TRACK 3 (Mail) DONE — all prod-verified.
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
   Latest commit on `main`: **`dad136f`**. (Direct push to `main` is allowed — no PR flow here.)
@@ -163,7 +163,7 @@ Sequence:
   Access so the spawned binary works in production?** If not, the binary may need to run such that it
   carries its own grant. Test this BEFORE finishing the Node swap.
 
-**TRACK 3 — Mail suite (net-new). ◀ IN PROGRESS — code-complete, NOT yet live-verified (2026-06-03).**
+**TRACK 3 — Mail suite (net-new). ✅ DONE — ALL 9 TOOLS PROD-VERIFIED LIVE (2026-06-03 session #4).**
 All 9 tools implemented across two pushed increments:
   - **Step 1 (read), commit `2f71213`:** `list_mailboxes`, `get_emails`, `get_email`, `search_emails`.
   - **Step 2 (mutating/sending):** `mark_email`, `move_email`, `trash_email`, `send_email`,
@@ -196,14 +196,39 @@ reached. **Root cause: full-folder enumeration triggering bulk IMAP header prefe
   **Known limitation (documented in tool descriptions):** unreadOnly/search only see recent messages
   within `daysBack` (and the scan cap) — older matches need a larger `daysBack`.
 
-**◀ NEXT: re-run live test #1.** Restart Claude Desktop (new dist), then, giving Mail ~60s to settle
-between calls: `list_mailboxes` → `get_emails` (Inbox, limit 5) → `get_emails {unreadOnly:true}` →
-`search_emails {searchTerm}` → `get_email {messageId}` → `mark_email` → `move_email`/`trash_email` on a
-throwaway → `send_email` + `reply_to_email` to a throwaway address. Watch for: (a) does the bounded scan
-actually avoid the lockout, (b) get_emails ordering (is `item 1` the newest?), (c) `account of mailbox`
-on the unified Inbox, (d) whether the **id-based lookup** in get_email/mark/move/trash/reply
-(`messages … whose id is N`, still a folder scan but header-only — no body prefetch) is fast enough on a
-large folder, or whether it ALSO needs a date floor, (e) headless `reply`+`send` (visible:false).
+**Live test #2 (2026-06-03 session #4) — FULL PASS, all 9 tools.** Run from a Cowork session against
+the live `apple-apps` MCP (send-to-self per John's OK). Results:
+  - **READ path (4 tools) ✅:** `list_mailboxes` (5 accounts, 47 mailboxes); `get_emails` (unified
+    Inbox, limit 5/8) correct shape + newest-first ordering; `get_email` full fetch — recipients, RFC
+    `message-id`, and **multi-line body all parsed** (newlines survived → body-as-last-field §§§ holds);
+    `search_emails` (subject-OR-sender, daysBack-scoped) returned expected matches. **The bounded scan
+    fixes worked — no lockout on reads.**
+  - **WRITE/SEND path (5 tools) ✅:** `send_email` to self — landed in `Sent Messages`, **apostrophes
+    in body survived clean** (escAS on send path confirmed); `mark_email` read→unread→read both ways;
+    `reply_to_email` produced a real `Re:` reply (visible:false, sent); `move_email` Sent Messages →
+    Archive (verified it actually landed, re-queried); `trash_email` Archive → Trash (verified source
+    mailbox empty after). All test artifacts cleaned up.
+
+**Findings from live test #2 (baked into CLAUDE.md Mail section):**
+  1. **IMAP sync lockout fires immediately after `send_email`.** The two `search_emails` calls right
+     after a send both hit the 28s timeout; cleared after ~1–2 min. The bounded-scan fixes prevent the
+     *enumeration* lockout, but a send still kicks off a sync that locks AppleScript briefly — give Mail
+     ~60s after any send before the next call.
+  2. **`move_email` REASSIGNS the integer id.** A message moved Sent Messages (id 593913) → Archive came
+     back as id **593916**. The id is a per-mailbox libraryID, so after a move you MUST re-fetch
+     (get_emails on the dest) to get the new id — the old id is stale. Foot-gun for any move-then-act
+     sequence; callers can't reuse the pre-move id.
+  3. **`"Sent"` (well-known) ≠ the account's `"Sent Messages"`.** Outbound mail (send + reply copies)
+     lands in **`Sent Messages`**, NOT the unified `"Sent"` mailbox — querying `mailbox:"Sent"` returns a
+     different, older set and will MISS a just-sent message. Search/fetch a just-sent message via
+     `mailbox:"Sent Messages"` (+ account), not `"Sent"`.
+  4. **Send-to-self did not loop back to INBOX** during the session (~3 min) — likely provider-side
+     dedup or delivery lag; verify a send via the `Sent Messages` copy, not by waiting for inbound.
+
+**Not separately exercised:** `get_emails {unreadOnly:true}` (the bounded unread scan) and the
+`account of mailbox` edge on the unified Inbox — both share the same `buildScanScript`/`filterMessages`
+path as the verified `get_emails`/`search_emails`, so they're covered transitively, but a dedicated
+unreadOnly run on a big folder (Receipts: 1518 unread) would be the last belt-and-suspenders check.
 
 ### Environment reality (don't fight these)
 - **The MCP runs inside Claude Desktop; `dist/` changes need a Desktop restart to go live** (no
