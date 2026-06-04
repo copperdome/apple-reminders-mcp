@@ -13,7 +13,7 @@ You're picking this up in a Cowork/Claude Code session on `~/apple-reminders-mcp
 ### Current state — clean, committed, pushed. TRACK 1 + TRACK 2 DONE (prod-verified). TRACK 3 (Mail) is next.
 - **Working tree is clean. Everything is committed and pushed** to `origin` =
   **`copperdome/apple-reminders-mcp`** (`upstream` = `dbmcco/apple-reminders-mcp`, no write access).
-  Latest commit on `main`: **`856137a`**. (Direct push to `main` is allowed — no PR flow here.)
+  Latest commit on `main`: **`dad136f`**. (Direct push to `main` is allowed — no PR flow here.)
 - `npm test` → **31 green** (vitest; tests in `test/`, pure helpers in `src/applescript-util.ts`).
   `npm run build` → green. `dist/` is fresh. (Swift files in `src/eventkit-cli/` are outside `tsc`.)
 - **2026-06-03 session #2 progress:**
