@@ -179,16 +179,19 @@ private func loadTags(db: OpaquePointer, pkToCkid: [Int64: String],
     }
 }
 
-// Attach section display names, keyed by the reminder's ckid. ZREMCDBASESECTION carries
-// the section's own ZCKIDENTIFIER, owning ZLIST, and ZDISPLAYNAME; the per-reminder
-// membership join (q_section_memberships, remctl:1493-1526) maps a reminder ckid to its
-// section. We resolve the membership table (ZREMCDOBJECT.ZSECTION -> section row), then
-// look the reminder up by ckid. Any failure logs and leaves `section` nil everywhere.
+// Attach section display names, keyed by the reminder's ckid. Section membership is NOT a
+// per-reminder FK on ZREMCDREMINDER (there is no ZSECTION column). It lives in a JSON blob
+// on the owning LIST: ZREMCDBASELIST.ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA, shaped
+// {"memberships":[{"memberID":<reminder ckid>,"groupID":<section ckid>,"isObsolete":bool}]}.
+// Section ckid -> display name comes from ZREMCDBASESECTION. Ported from RemCTL's
+// q_section_memberships (remctl:1493-1511). Both keys (memberID, groupID) are ckids, so the
+// result lands directly in our id space. Any prepare/parse failure logs and leaves `section`
+// nil everywhere.
 private func loadSections(db: OpaquePointer, into result: inout [String: ReminderEnrichment]) {
-    // section Z_PK -> display name
-    var sectionNameByPk: [Int64: String] = [:]
+    // section ckid -> display name
+    var sectionNameByCkid: [String: String] = [:]
     let secSQL = """
-        SELECT Z_PK, ZDISPLAYNAME
+        SELECT ZCKIDENTIFIER, ZDISPLAYNAME
         FROM ZREMCDBASESECTION
         WHERE ZMARKEDFORDELETION = 0
         """
@@ -198,19 +201,19 @@ private func loadSections(db: OpaquePointer, into result: inout [String: Reminde
         return
     }
     while sqlite3_step(secStmt) == SQLITE_ROW {
-        guard let nameC = sqlite3_column_text(secStmt, 1) else { continue }
-        sectionNameByPk[sqlite3_column_int64(secStmt, 0)] = String(cString: nameC)
+        guard sqlite3_column_type(secStmt, 0) != SQLITE_NULL,
+              let ckidC = sqlite3_column_text(secStmt, 0),
+              let nameC = sqlite3_column_text(secStmt, 1) else { continue }
+        sectionNameByCkid[String(cString: ckidC)] = String(cString: nameC)
     }
     sqlite3_finalize(secStmt)
-    guard !sectionNameByPk.isEmpty else { return }
+    guard !sectionNameByCkid.isEmpty else { return }
 
-    // reminder ckid -> section Z_PK, via the reminder object's ZSECTION pointer. We read
-    // the reminder's own ZCKIDENTIFIER and its ZSECTION from ZREMCDREMINDER so the key is
-    // already in our id space (no second translation needed).
+    // Per-list membership JSON blob -> (reminder ckid : section display name).
     let memSQL = """
-        SELECT ZCKIDENTIFIER, ZSECTION
-        FROM ZREMCDREMINDER
-        WHERE ZSECTION IS NOT NULL AND ZMARKEDFORDELETION = 0
+        SELECT ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA
+        FROM ZREMCDBASELIST
+        WHERE ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA IS NOT NULL
         """
     var memStmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, memSQL, -1, &memStmt, nil) == SQLITE_OK else {
@@ -219,11 +222,19 @@ private func loadSections(db: OpaquePointer, into result: inout [String: Reminde
     }
     defer { sqlite3_finalize(memStmt) }
     while sqlite3_step(memStmt) == SQLITE_ROW {
-        guard sqlite3_column_type(memStmt, 0) != SQLITE_NULL,
-              let ckidC = sqlite3_column_text(memStmt, 0) else { continue }
-        let ckid = String(cString: ckidC)
-        let sectionPk = sqlite3_column_int64(memStmt, 1)
-        guard let name = sectionNameByPk[sectionPk], result[ckid] != nil else { continue }
-        result[ckid]?.section = name
+        guard let bytes = sqlite3_column_blob(memStmt, 0) else { continue }
+        let len = Int(sqlite3_column_bytes(memStmt, 0))
+        guard len > 0 else { continue }
+        let data = Data(bytes: bytes, count: len)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let memberships = obj["memberships"] as? [[String: Any]] else { continue }
+        for m in memberships {
+            if let obsolete = m["isObsolete"] as? Bool, obsolete { continue }
+            guard let memberID = m["memberID"] as? String,
+                  let groupID = m["groupID"] as? String,
+                  let name = sectionNameByCkid[groupID],
+                  result[memberID] != nil else { continue }
+            result[memberID]?.section = name
+        }
     }
 }
