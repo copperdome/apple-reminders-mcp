@@ -24,6 +24,7 @@ import {
   buildAddTagsArgs,
   buildAddSubtaskArgs,
   buildAssignSectionArgs,
+  normalizeTagsInput,
   parseCliJson,
   type ReminderUpdateFields,
 } from './reminders-util.js';
@@ -160,8 +161,12 @@ export class RemindersExecutor {
     parseCliJson<{ ok: boolean }>(out);
   }
 
-  async addTags(reminderId: string, tags: string[]): Promise<void> {
-    const out = await this.runCli(buildAddTagsArgs(reminderId, tags));
+  // Accepts whatever the MCP client sent (array, CSV string, or stringified array) and
+  // normalizes to clean tag tokens before building the CLI args.
+  async addTags(reminderId: string, tags: unknown): Promise<void> {
+    const clean = normalizeTagsInput(tags);
+    if (clean.length === 0) throw new Error('add_reminder_tags: no valid tags provided');
+    const out = await this.runCli(buildAddTagsArgs(reminderId, clean));
     parseCliJson<{ ok: boolean }>(out);
   }
 

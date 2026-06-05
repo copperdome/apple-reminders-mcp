@@ -127,7 +127,7 @@ class AppleMCPServer {
               type: 'object',
               properties: {
                 reminderId: { type: 'string', description: 'Reminder ID (from get_reminders)' },
-                tags:       { description: 'Tag names (array of strings, or a comma-separated string); a leading # is optional' },
+                tags:       { type: 'array', items: { type: 'string' }, description: 'Tag names, e.g. ["work","urgent"] (a leading # is optional). A comma-separated string is also accepted.' },
               },
               required: ['reminderId', 'tags'],
             },
@@ -442,11 +442,9 @@ class AppleMCPServer {
           }
 
           case 'add_reminder_tags': {
-            const tags = typeof args.tags === 'string'
-              ? (args.tags as string).split(',').map(t => t.trim()).filter(Boolean)
-              : (args.tags as string[]);
-            await this.reminders.addTags(args.reminderId as string, tags);
-            return { content: [{ type: 'text', text: `Added tags to ${args.reminderId}: ${tags.join(', ')}` }] };
+            // Normalization (array | CSV | stringified-array) happens in the executor.
+            await this.reminders.addTags(args.reminderId as string, args.tags);
+            return { content: [{ type: 'text', text: `Added tags to ${args.reminderId}` }] };
           }
 
           case 'add_subtask': {

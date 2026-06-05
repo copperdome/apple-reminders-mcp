@@ -14,6 +14,7 @@ import {
   buildAddTagsArgs,
   buildAddSubtaskArgs,
   buildAssignSectionArgs,
+  normalizeTagsInput,
   parseCliJson,
 } from '../src/reminders-util';
 import type { Reminder } from '../src/reminders-executor';
@@ -166,6 +167,36 @@ describe('write arg-builders (ReminderKit)', () => {
   it('assign-section passes the section name as a single arg', () => {
     expect(buildAssignSectionArgs('A', 'Home Maintenance'))
       .toEqual(['assign-section', '--id', 'A', '--section', 'Home Maintenance']);
+  });
+});
+
+describe('normalizeTagsInput', () => {
+  it('passes a real string array through', () => {
+    expect(normalizeTagsInput(['work', 'urgent'])).toEqual(['work', 'urgent']);
+  });
+  it('splits a comma-separated string', () => {
+    expect(normalizeTagsInput('work, urgent')).toEqual(['work', 'urgent']);
+  });
+  it('parses a JSON-encoded array string', () => {
+    expect(normalizeTagsInput('["work","urgent"]')).toEqual(['work', 'urgent']);
+  });
+  it('REGRESSION: a bracketed unquoted string yields the tag, NOT "[mcptest]"', () => {
+    // The live bug: add_reminder_tags received "[mcptest]" and stored the literal
+    // "[mcptest]" as the tag. It must come back as "mcptest".
+    expect(normalizeTagsInput('[mcptest]')).toEqual(['mcptest']);
+    expect(normalizeTagsInput('[a, b]')).toEqual(['a', 'b']);
+  });
+  it('strips a leading # and surrounding quotes; drops empties', () => {
+    expect(normalizeTagsInput(['#work', '"urgent"', '', '  '])).toEqual(['work', 'urgent']);
+  });
+  it('returns [] for non-tag inputs', () => {
+    expect(normalizeTagsInput(undefined)).toEqual([]);
+    expect(normalizeTagsInput(null)).toEqual([]);
+    expect(normalizeTagsInput('')).toEqual([]);
+  });
+  it('feeds cleanly into buildAddTagsArgs (no bracket leakage)', () => {
+    expect(buildAddTagsArgs('A', normalizeTagsInput('[mcptest]')))
+      .toEqual(['add-tags', '--id', 'A', '--tags', 'mcptest']);
   });
 });
 

@@ -109,6 +109,34 @@ export function buildAddTagsArgs(id: string, tags: string[]): string[] {
   return ['add-tags', '--id', id, '--tags', tags.join(',')];
 }
 
+// Normalize whatever the MCP client sent for `tags` into a clean string[]. The tags input
+// is genuinely ambiguous across clients: a real array (["a","b"]), a CSV string ("a,b"),
+// a JSON-encoded array ('["a","b"]'), or — the bug this guards — a bracketed-but-unquoted
+// string ("[mcptest]") that naive splitting turned into the literal tag "[mcptest]". Each
+// token is trimmed, has surrounding quotes and a leading '#' stripped, and empties dropped.
+export function normalizeTagsInput(input: unknown): string[] {
+  let raw: unknown[] = [];
+  if (Array.isArray(input)) {
+    raw = input;
+  } else if (typeof input === 'string') {
+    const s = input.trim();
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s);
+        raw = Array.isArray(parsed) ? parsed : [s];
+      } catch {
+        // Salvage a bracketed-but-not-valid-JSON string like "[mcptest]" or "[a, b]".
+        raw = s.replace(/^\[/, '').replace(/\]$/, '').split(',');
+      }
+    } else {
+      raw = s.split(',');
+    }
+  }
+  return raw
+    .map(t => String(t).trim().replace(/^["']+|["']+$/g, '').replace(/^#/, '').trim())
+    .filter(Boolean);
+}
+
 // Adds a NEW child reminder under the given parent (ReminderKit has no re-parent op).
 export function buildAddSubtaskArgs(parentId: string, name: string): string[] {
   return ['add-subtask', '--parent', parentId, '--name', name];
