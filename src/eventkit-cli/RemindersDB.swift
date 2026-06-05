@@ -71,19 +71,32 @@ private func logDB(_ message: String) {
     FileHandle.standardError.write("RemindersDB: \(message)\n".data(using: .utf8)!)
 }
 
-// Open the store read-only and lock-free via the `immutable=1` URI (so a syncing
-// Reminders.app can't block us, at the cost of possibly lagging the live -wal by a
-// checkpoint — fine for best-effort enrichment). Returns nil on any failure.
+// Open the store read-only. We try a PLAIN read-only open FIRST: in WAL mode this reads
+// the live `-wal` (so changes written moments ago — e.g. via ReminderKit — are visible)
+// and does NOT block the writer (WAL lets readers and the single writer coexist). A probe
+// query confirms the connection can actually read (the wal-index/`-shm` is attachable).
+// If it can't (no `-shm` access, or a fully-checkpointed idle store), we fall back to the
+// lock-free `immutable=1` URI, which reads only the main file and may lag the `-wal`.
+// A 2s busy timeout bounds any momentary checkpoint contention. nil on any failure.
 private func openStore(_ path: String) -> OpaquePointer? {
     var db: OpaquePointer?
-    let uri = "file:\(path)?immutable=1"
-    let rc = sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil)
-    if rc != SQLITE_OK {
-        logDB("open failed (rc=\(rc)) for \(path) — likely no Full Disk Access; degrading")
-        if db != nil { sqlite3_close(db) }
-        return nil
+    if sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+        sqlite3_busy_timeout(db, 2000)
+        if sqlite3_exec(db, "SELECT 1 FROM ZREMCDREMINDER LIMIT 1", nil, nil, nil) == SQLITE_OK {
+            return db   // reads the live -wal → fresh
+        }
+        sqlite3_close(db); db = nil   // opened but couldn't read (e.g. wal-index unopenable)
+    } else if db != nil {
+        sqlite3_close(db); db = nil
     }
-    return db
+    let uri = "file:\(path)?immutable=1"
+    if sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK {
+        sqlite3_busy_timeout(db, 2000)
+        return db   // lock-free fallback; main file only, may lag -wal
+    }
+    logDB("open failed for \(path) — likely no Full Disk Access; degrading")
+    if db != nil { sqlite3_close(db) }
+    return nil
 }
 
 // Build the [reminder ckid -> ReminderEnrichment] map. nil ⇒ enrichment unavailable
