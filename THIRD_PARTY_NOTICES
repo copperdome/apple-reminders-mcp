@@ -28,21 +28,29 @@ What was ported into RemindersDB.swift (read path, Phase 1):
   - Full Disk Access is a manual grant with no Info.plist usage key
     (RemCTL `remctl-permissions.swift:124,193`).
 
-To be ported into RemindersPrivate.m (write path, Phase 2 — follow-up):
-  - ReminderKit selectors from RemCTL `remctl-private.m` (REMStore /
-    REMSaveRequest / REMReminderChangeItem / REMObjectID / REMMembership), e.g.
-    `:31`, `:176-184`, `:570`, `:640`, `:732`, and section ckid resolution
-    (`remctl:3073`).
+What was ported into RemindersPrivate.m + .h (write path, Phase 2):
+  - The private ReminderKit @interface declarations and the fetch→change→save flow
+    from RemCTL `remctl-private.m`: REMStore / REMSaveRequest / REMReminderChangeItem /
+    REMObjectID / REMMembership / REMMemberships, the `x-apple-reminderkit://` URL
+    shapes (`:344-358`), and the per-feature selectors —
+      * flagged: `[[change flaggedContext] setFlagged:]` (`:1375`)
+      * tags:    `[hashtagContext addHashtagWithType:1 name:]` (`:1450`)
+      * subtask: `addReminderWithTitle:toReminderSubtaskContextChangeItem:` (`:1283`)
+      * section: REMMembership + `setUnsavedMembershipsOfRemindersInSections:`,
+                 `addListSectionWithDisplayName:` (`:1298-1323`)
+      * save:    `saveSynchronouslyWithError:` (`:1455`)
+  - Existing-section resolution by name: `resolveSectionCkid` in RemindersDB.swift,
+    from RemCTL `resolve_section_ckid` (`remctl:3073`).
 
 Reference checkout used while porting: /Users/john/remctl-reference
-Reference commit SHA: <FILL IN from `git -C /Users/john/remctl-reference rev-parse HEAD`>
-Project: https://github.com/viticci/RemCTL   (verify URL against the checkout)
+Reference commit SHA: 5b39e2aaf2dcc1a1da573cbbb9d65cfd1b991069
+Project: https://github.com/viticci/remctl
 
 RemCTL is distributed under the MIT License:
 
     MIT License
 
-    Copyright (c) Federico Viticci
+    Copyright (c) 2026 RemCTL contributors
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -62,6 +70,5 @@ RemCTL is distributed under the MIT License:
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-NOTE: Confirm RemCTL's exact copyright line and the verbatim LICENSE text against the
-reference checkout (`/Users/john/remctl-reference/LICENSE`) and replace the SHA/URL
-placeholders above before publishing — the Linux porting session could not read them.
+Copyright line, LICENSE text, commit SHA, and URL above were verified against the
+reference checkout (`/Users/john/remctl-reference`, commit 5b39e2a) on 2026-06-04.

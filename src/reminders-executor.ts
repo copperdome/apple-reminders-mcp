@@ -20,6 +20,10 @@ import {
   buildCreateReminderArgs,
   buildUpdateReminderArgs,
   buildDeleteReminderArgs,
+  buildSetFlaggedArgs,
+  buildAddTagsArgs,
+  buildAddSubtaskArgs,
+  buildAssignSectionArgs,
   parseCliJson,
   type ReminderUpdateFields,
 } from './reminders-util.js';
@@ -145,5 +149,30 @@ export class RemindersExecutor {
   async deleteReminder(reminderId: string): Promise<void> {
     const out = await this.runCli(buildDeleteReminderArgs(reminderId));
     parseCliJson<{ deleted: boolean }>(out); // throws on {"error":…}
+  }
+
+  // ── WRITES via private ReminderKit (Phase 2) ──────────────────────────────
+  // Set the fields EventKit can't: flagged, #hashtag tags, subtask, section.
+  // `reminderId` is the reminder's id (== ZCKIDENTIFIER). Each throws on {"error":…}.
+
+  async setFlagged(reminderId: string, flagged: boolean): Promise<void> {
+    const out = await this.runCli(buildSetFlaggedArgs(reminderId, flagged));
+    parseCliJson<{ ok: boolean }>(out);
+  }
+
+  async addTags(reminderId: string, tags: string[]): Promise<void> {
+    const out = await this.runCli(buildAddTagsArgs(reminderId, tags));
+    parseCliJson<{ ok: boolean }>(out);
+  }
+
+  // Adds a new child reminder under `parentId`; returns nothing (ReminderKit owns the id).
+  async addSubtask(parentId: string, name: string): Promise<void> {
+    const out = await this.runCli(buildAddSubtaskArgs(parentId, name));
+    parseCliJson<{ ok: boolean }>(out);
+  }
+
+  async assignSection(reminderId: string, section: string): Promise<void> {
+    const out = await this.runCli(buildAssignSectionArgs(reminderId, section));
+    parseCliJson<{ ok: boolean }>(out);
   }
 }

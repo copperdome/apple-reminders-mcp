@@ -34,6 +34,9 @@
 import Foundation
 import SQLite3
 
+// SQLite wants SQLITE_TRANSIENT (copy the bound bytes) for text we don't keep alive.
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 // The four enrichment fields for one reminder. Any may be nil (unknown / not applicable);
 // nil fields are omitted from the JSON by the caller, so absent ≠ false.
 struct ReminderEnrichment {
@@ -237,4 +240,46 @@ private func loadSections(db: OpaquePointer, into result: inout [String: Reminde
             result[memberID]?.section = name
         }
     }
+}
+
+// Resolve an EXISTING section by display name (case-insensitive) within the list that
+// owns the given reminder. Returns the section's ZCKIDENTIFIER, or nil if there's no such
+// section / the store can't be read (no FDA). Used by `assign-section` to decide between
+// assigning to an existing section vs. creating a new one. Ported from RemCTL's
+// resolve_section_ckid (remctl:3073).
+func resolveSectionCkid(reminderCkid: String, sectionName: String) -> String? {
+    guard let path = locateStore(), let db = openStore(path) else { return nil }
+    defer { sqlite3_close(db) }
+
+    // reminder ckid -> its owning list's Z_PK
+    var listPk: Int64?
+    var s1: OpaquePointer?
+    if sqlite3_prepare_v2(db,
+        "SELECT ZLIST FROM ZREMCDREMINDER WHERE ZCKIDENTIFIER = ? AND ZMARKEDFORDELETION = 0",
+        -1, &s1, nil) == SQLITE_OK {
+        sqlite3_bind_text(s1, 1, reminderCkid, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(s1) == SQLITE_ROW, sqlite3_column_type(s1, 0) != SQLITE_NULL {
+            listPk = sqlite3_column_int64(s1, 0)
+        }
+    }
+    sqlite3_finalize(s1)
+    guard let lp = listPk else { return nil }
+
+    // section in that list whose display name matches (case-insensitive)
+    var found: String?
+    var s2: OpaquePointer?
+    if sqlite3_prepare_v2(db,
+        """
+        SELECT ZCKIDENTIFIER FROM ZREMCDBASESECTION
+        WHERE ZLIST = ? AND ZMARKEDFORDELETION = 0 AND lower(ZDISPLAYNAME) = lower(?)
+        """, -1, &s2, nil) == SQLITE_OK {
+        sqlite3_bind_int64(s2, 1, lp)
+        sqlite3_bind_text(s2, 2, sectionName, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(s2) == SQLITE_ROW, sqlite3_column_type(s2, 0) != SQLITE_NULL,
+           let c = sqlite3_column_text(s2, 0) {
+            found = String(cString: c)
+        }
+    }
+    sqlite3_finalize(s2)
+    return found
 }

@@ -108,6 +108,54 @@ class AppleMCPServer {
               required: ['searchTerm'],
             },
           },
+          {
+            name: 'set_reminder_flagged',
+            description: 'Set/clear a reminder\'s flag. Uses Apple\'s private ReminderKit framework (may break on macOS updates). reminderId is the id from get_reminders.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                reminderId: { type: 'string', description: 'Reminder ID (from get_reminders)' },
+                flagged:    {                 description: 'true to flag, false to unflag' },
+              },
+              required: ['reminderId', 'flagged'],
+            },
+          },
+          {
+            name: 'add_reminder_tags',
+            description: 'Add #hashtag tags to a reminder (additive; does not remove existing tags). Uses Apple\'s private ReminderKit framework (may break on macOS updates).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                reminderId: { type: 'string', description: 'Reminder ID (from get_reminders)' },
+                tags:       { description: 'Tag names (array of strings, or a comma-separated string); a leading # is optional' },
+              },
+              required: ['reminderId', 'tags'],
+            },
+          },
+          {
+            name: 'add_subtask',
+            description: 'Add a new child reminder (subtask) under a parent reminder. Uses Apple\'s private ReminderKit framework (may break on macOS updates).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                parentId: { type: 'string', description: 'Parent reminder ID (from get_reminders)' },
+                name:     { type: 'string', description: 'Subtask title' },
+              },
+              required: ['parentId', 'name'],
+            },
+          },
+          {
+            name: 'assign_reminder_section',
+            description: 'Assign a reminder to a named section within its list (the section is created in that list if it doesn\'t exist). Uses Apple\'s private ReminderKit framework (may break on macOS updates).',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                reminderId: { type: 'string', description: 'Reminder ID (from get_reminders)' },
+                section:    { type: 'string', description: 'Section display name' },
+              },
+              required: ['reminderId', 'section'],
+            },
+          },
 
           // ── Calendar ───────────────────────────────────────────────
           {
@@ -385,6 +433,30 @@ class AppleMCPServer {
               args.listName   as string | undefined,
             );
             return { content: [{ type: 'text', text: JSON.stringify(reminders, null, 2) }] };
+          }
+
+          case 'set_reminder_flagged': {
+            const flagged = args.flagged === true || args.flagged === 'true';
+            await this.reminders.setFlagged(args.reminderId as string, flagged);
+            return { content: [{ type: 'text', text: `Reminder ${args.reminderId} flagged=${flagged}` }] };
+          }
+
+          case 'add_reminder_tags': {
+            const tags = typeof args.tags === 'string'
+              ? (args.tags as string).split(',').map(t => t.trim()).filter(Boolean)
+              : (args.tags as string[]);
+            await this.reminders.addTags(args.reminderId as string, tags);
+            return { content: [{ type: 'text', text: `Added tags to ${args.reminderId}: ${tags.join(', ')}` }] };
+          }
+
+          case 'add_subtask': {
+            await this.reminders.addSubtask(args.parentId as string, args.name as string);
+            return { content: [{ type: 'text', text: `Subtask added under ${args.parentId}: ${args.name}` }] };
+          }
+
+          case 'assign_reminder_section': {
+            await this.reminders.assignSection(args.reminderId as string, args.section as string);
+            return { content: [{ type: 'text', text: `Reminder ${args.reminderId} assigned to section "${args.section}"` }] };
           }
 
           // ── Calendar ───────────────────────────────────────────────

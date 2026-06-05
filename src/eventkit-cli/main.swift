@@ -621,6 +621,55 @@ func cmdDeleteReminder(_ a: [String: String]) {
     emitJSON(["deleted": true])
 }
 
+// MARK: - Reminders WRITES via private ReminderKit (RemindersPrivate.m / .h)
+// These set the fields EventKit can't write: flagged, #hashtag tags, subtask, section.
+// The id passed is the reminder's `id` (== ZCKIDENTIFIER == ReminderKit ckid; no
+// translation). Each C function returns NULL on success or a malloc'd error string.
+// PRIVATE API: weak-linked + runtime-guarded; an unavailable framework yields a clean
+// error, never a crash. (Reads are unaffected.)
+
+// Turn a ReminderKit C result into our JSON contract: nil ⇒ {"ok":true}; non-nil ⇒ fail.
+private func remResult(_ ptr: UnsafePointer<CChar>?) -> Never {
+    if let ptr = ptr {
+        let msg = String(cString: ptr)
+        free(UnsafeMutableRawPointer(mutating: ptr))
+        fail("ReminderKit: \(msg)")
+    }
+    emitJSON(["ok": true])
+    exit(0)
+}
+
+func cmdSetFlagged(_ a: [String: String]) {
+    let id = require(a, "id", "set-flagged")
+    let flagged = (a["flagged"] ?? "true") == "true"
+    remResult(rem_set_flagged(id, flagged ? 1 : 0))
+}
+
+func cmdAddTags(_ a: [String: String]) {
+    let id = require(a, "id", "add-tags")
+    let tags = require(a, "tags", "add-tags")   // comma-separated; a leading '#' is stripped
+    remResult(rem_add_tags(id, tags))
+}
+
+func cmdAddSubtask(_ a: [String: String]) {
+    let parent = require(a, "parent", "add-subtask")
+    let name = require(a, "name", "add-subtask")
+    remResult(rem_add_subtask(parent, name))
+}
+
+func cmdAssignSection(_ a: [String: String]) {
+    let id = require(a, "id", "assign-section")
+    let name = require(a, "section", "assign-section")
+    // Prefer an EXISTING section of the reminder's list (avoids duplicate sections); fall
+    // back to creating one. The existing-section lookup reads the SQLite store (needs Full
+    // Disk Access); when unavailable resolveSectionCkid returns nil and we create by name.
+    if let existing = resolveSectionCkid(reminderCkid: id, sectionName: name) {
+        remResult(rem_assign_section(id, existing))
+    } else {
+        remResult(rem_add_section_and_assign(id, name))
+    }
+}
+
 // MARK: - Argument parsing
 // Dumb --flag value pairs into a dict. A --flag with no following value (or followed
 // by another --flag) is a boolean flag set to "true".
@@ -822,6 +871,8 @@ let flags = parseArgs(argv.dropFirst(2))
 let reminderCommands: Set<String> = [
     "list-reminder-lists", "get-reminders", "search-reminders",
     "create-reminder", "update-reminder", "delete-reminder",
+    // writes via private ReminderKit (still need the Reminders TCC grant):
+    "set-flagged", "add-tags", "add-subtask", "assign-section",
 ]
 
 if reminderCommands.contains(command) {
@@ -859,6 +910,14 @@ case "update-reminder":
     cmdUpdateReminder(flags)
 case "delete-reminder":
     cmdDeleteReminder(flags)
+case "set-flagged":
+    cmdSetFlagged(flags)
+case "add-tags":
+    cmdAddTags(flags)
+case "add-subtask":
+    cmdAddSubtask(flags)
+case "assign-section":
+    cmdAssignSection(flags)
 default:
     fail("unknown command: \(command)")
 }

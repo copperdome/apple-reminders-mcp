@@ -93,3 +93,29 @@ export function buildUpdateReminderArgs(id: string, updates: ReminderUpdateField
 export function buildDeleteReminderArgs(id: string): string[] {
   return ['delete-reminder', '--id', id];
 }
+
+// ── WRITES via private ReminderKit (Phase 2) ────────────────────────────────────────
+// These set the fields EventKit can't write: flagged, #hashtag tags, subtask, section.
+// `id` is the reminder's `id` (== ZCKIDENTIFIER == ReminderKit ckid). The CLI returns
+// {"ok":true} or {"error":…}. See src/eventkit-cli/RemindersPrivate.m.
+
+export function buildSetFlaggedArgs(id: string, flagged: boolean): string[] {
+  return ['set-flagged', '--id', id, '--flagged', String(flagged)];
+}
+
+// Tags are passed comma-separated (Reminders #hashtags are single tokens — no commas);
+// the CLI splits and strips a leading '#'. ADD semantics (does not remove existing tags).
+export function buildAddTagsArgs(id: string, tags: string[]): string[] {
+  return ['add-tags', '--id', id, '--tags', tags.join(',')];
+}
+
+// Adds a NEW child reminder under the given parent (ReminderKit has no re-parent op).
+export function buildAddSubtaskArgs(parentId: string, name: string): string[] {
+  return ['add-subtask', '--parent', parentId, '--name', name];
+}
+
+// Assigns the reminder to a section by display name (created in the reminder's list if it
+// doesn't already exist — the CLI resolves existing-vs-create).
+export function buildAssignSectionArgs(id: string, section: string): string[] {
+  return ['assign-section', '--id', id, '--section', section];
+}

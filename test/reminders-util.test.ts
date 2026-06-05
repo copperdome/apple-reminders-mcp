@@ -10,6 +10,10 @@ import {
   buildCreateReminderArgs,
   buildUpdateReminderArgs,
   buildDeleteReminderArgs,
+  buildSetFlaggedArgs,
+  buildAddTagsArgs,
+  buildAddSubtaskArgs,
+  buildAssignSectionArgs,
   parseCliJson,
 } from '../src/reminders-util';
 import type { Reminder } from '../src/reminders-executor';
@@ -140,6 +144,28 @@ describe('buildUpdateReminderArgs', () => {
 describe('buildDeleteReminderArgs', () => {
   it('id only', () => {
     expect(buildDeleteReminderArgs('XYZ')).toEqual(['delete-reminder', '--id', 'XYZ']);
+  });
+});
+
+describe('write arg-builders (ReminderKit)', () => {
+  it('set-flagged emits the boolean as a string', () => {
+    expect(buildSetFlaggedArgs('A', true)).toEqual(['set-flagged', '--id', 'A', '--flagged', 'true']);
+    expect(buildSetFlaggedArgs('A', false)).toEqual(['set-flagged', '--id', 'A', '--flagged', 'false']);
+  });
+  it('add-tags joins tags with commas', () => {
+    expect(buildAddTagsArgs('A', ['work', 'urgent']))
+      .toEqual(['add-tags', '--id', 'A', '--tags', 'work,urgent']);
+  });
+  it('add-tags handles a single tag', () => {
+    expect(buildAddTagsArgs('A', ['solo'])).toEqual(['add-tags', '--id', 'A', '--tags', 'solo']);
+  });
+  it('add-subtask passes parent + name as single args (spaces preserved)', () => {
+    expect(buildAddSubtaskArgs('PARENT', 'Buy the milk'))
+      .toEqual(['add-subtask', '--parent', 'PARENT', '--name', 'Buy the milk']);
+  });
+  it('assign-section passes the section name as a single arg', () => {
+    expect(buildAssignSectionArgs('A', 'Home Maintenance'))
+      .toEqual(['assign-section', '--id', 'A', '--section', 'Home Maintenance']);
   });
 });
 
