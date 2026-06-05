@@ -47,5 +47,7 @@ Thumbs.db
 
 # Project-specific
 .claude/
-CLAUDE.md
 .mcp.json
+# CLAUDE.md is tracked (shared project context). Keep personal/machine-specific notes
+# in CLAUDE.local.md, which stays ignored:
+CLAUDE.local.md
