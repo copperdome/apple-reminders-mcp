@@ -12,8 +12,9 @@
 #   bash src/eventkit-cli/verify-writes.sh [ListName]   # default list: Reminders
 #
 # Creates throwaway "[EK-WTEST]" reminders, mutates them, reads back, then deletes them.
-# NOTE: assign-section creates a section "[EK-WTEST] Section" in the list; an empty section
-# may linger afterward — delete it by hand in Reminders.app if you don't want it.
+# NOTE: assign-section creates a section "[EK-WTEST] Section". Reminders normally removes the
+# now-empty section once its only member is deleted (observed live); if one ever lingers,
+# delete it by hand in Reminders.app.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIST="${1:-Reminders}"
@@ -56,4 +57,4 @@ echo "== final re-query (EXPECT []) =="
 
 echo
 echo "DONE. Pass: parent showed flagged:true + tags:[ekwtest] + section; the child showed"
-echo "isSubtask:true with parentId=the parent. (An empty [EK-WTEST] Section may remain.)"
+echo "isSubtask:true with parentId=the parent. (Reminders auto-removes the now-empty section.)"
